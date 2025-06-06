@@ -1091,7 +1091,9 @@ ngx_configure_listening_sockets(ngx_cycle_t *cycle)
     return;
 }
 
-
+/**
+ * 关闭进程中打开的监听端口
+ */
 void
 ngx_close_listening_sockets(ngx_cycle_t *cycle)
 {
@@ -1170,7 +1172,10 @@ ngx_close_listening_sockets(ngx_cycle_t *cycle)
     cycle->listening.nelts = 0;
 }
 
-
+/**
+ * 从ngx_cycle->free_connections中获取一个连接
+ * s：是这条连接的套接字句柄
+ */
 ngx_connection_t *
 ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 {
@@ -1180,6 +1185,7 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
 
     /* disable warning: Win32 SOCKET is u_int while UNIX socket is int */
 
+    //只在poll和devpoll事件模型中files不为0
     if (ngx_cycle->files && (ngx_uint_t) s >= ngx_cycle->files_n) {
         ngx_log_error(NGX_LOG_ALERT, log, 0,
                       "the new socket has number %d, "
@@ -1188,6 +1194,7 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
         return NULL;
     }
 
+    //先释放一些free连接
     ngx_drain_connections((ngx_cycle_t *) ngx_cycle);
 
     c = ngx_cycle->free_connections;
@@ -1236,11 +1243,13 @@ ngx_get_connection(ngx_socket_t s, ngx_log_t *log)
     return c;
 }
 
-
+/**
+ * 将连接标记为free, 放入ngx_cycle的free_connections中
+ */
 void
 ngx_free_connection(ngx_connection_t *c)
 {
-    c->data = ngx_cycle->free_connections;
+    c->data = ngx_cycle->free_connections;  //使用c->data组成free链表
     ngx_cycle->free_connections = c;
     ngx_cycle->free_connection_n++;
 
@@ -1249,7 +1258,9 @@ ngx_free_connection(ngx_connection_t *c)
     }
 }
 
-
+/**
+ * 关闭连接，将连接放入ngx_cycle的连接池free链表中
+ */
 void
 ngx_close_connection(ngx_connection_t *c)
 {
@@ -1262,6 +1273,7 @@ ngx_close_connection(ngx_connection_t *c)
         return;
     }
 
+    //移除读写事件定时器
     if (c->read->timer_set) {
         ngx_del_timer(c->read);
     }
@@ -1270,7 +1282,9 @@ ngx_close_connection(ngx_connection_t *c)
         ngx_del_timer(c->write);
     }
 
+    //非共享？
     if (!c->shared) {
+        //将读/写事件从epoll中移除
         if (ngx_del_conn) {
             ngx_del_conn(c, NGX_CLOSE_EVENT);
 
@@ -1285,6 +1299,8 @@ ngx_close_connection(ngx_connection_t *c)
         }
     }
 
+    //如果读写事件在 ngx_posted_accept_events或者ngx_posted_events队列中，
+    //还需要调用ngx_delete_posted_event宏 把事件从post事件队列中移除
     if (c->read->posted) {
         ngx_delete_posted_event(c->read);
     }
@@ -1300,6 +1316,7 @@ ngx_close_connection(ngx_connection_t *c)
 
     log_error = c->log_error;
 
+    //将c标记为free
     ngx_free_connection(c);
 
     fd = c->fd;
@@ -1309,6 +1326,7 @@ ngx_close_connection(ngx_connection_t *c)
         return;
     }
 
+    //系统调用关闭连接
     if (ngx_close_socket(fd) == -1) {
 
         err = ngx_socket_errno;
@@ -1337,7 +1355,9 @@ ngx_close_connection(ngx_connection_t *c)
     }
 }
 
-
+/**
+ * ngx_cycle的reusable_connections_n计数
+ */
 void
 ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
 {
@@ -1369,6 +1389,9 @@ ngx_reusable_connection(ngx_connection_t *c, ngx_uint_t reusable)
 }
 
 
+/**
+ * 释放一定数量的可复用connection
+ */
 static void
 ngx_drain_connections(ngx_cycle_t *cycle)
 {
@@ -1518,6 +1541,9 @@ ngx_connection_local_sockaddr(ngx_connection_t *c, ngx_str_t *s,
 }
 
 
+/**
+ * 设置tcp连接的TCP_NODELAY套接字选项
+ */
 ngx_int_t
 ngx_tcp_nodelay(ngx_connection_t *c)
 {

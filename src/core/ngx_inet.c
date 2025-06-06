@@ -16,6 +16,10 @@ static ngx_int_t ngx_inet_add_addr(ngx_pool_t *pool, ngx_url_t *u,
     struct sockaddr *sockaddr, socklen_t socklen, ngx_uint_t total);
 
 
+/**
+ * 点分十进制格式的 IPv4 地址字符串转换为 32 位无符号整数
+ * 返回INADDR_NONE：表示ipv4格式不合法
+ */
 in_addr_t
 ngx_inet_addr(u_char *text, size_t len)
 {
@@ -61,6 +65,9 @@ ngx_inet_addr(u_char *text, size_t len)
 
 #if (NGX_HAVE_INET6)
 
+/**
+ * 用于将 IPv6 地址字符串转换为
+ */
 ngx_int_t
 ngx_inet6_addr(u_char *p, size_t len, u_char *addr)
 {
@@ -370,7 +377,12 @@ ngx_inet6_ntop(u_char *p, u_char *text, size_t len)
 
 #endif
 
-
+/**
+ * 点分十进制格式的 IP 地址字符串转换为二进制形式
+ * text: 指向点分十进制格式的 IP 地址字符串的指针
+ * cidr: 指向 ngx_cidr_t 结构体的指针，用于存储转换结果
+ * 
+ */
 ngx_int_t
 ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
 {
@@ -385,12 +397,12 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
     addr = text->data;
     last = addr + text->len;
 
-    mask = ngx_strlchr(addr, last, '/');
-    len = (mask ? mask : last) - addr;
+    mask = ngx_strlchr(addr, last, '/'); //192.168.1.0/24 查找/的位置
+    len = (mask ? mask : last) - addr;  //len为192.168.1.0的长度
 
-    cidr->u.in.addr = ngx_inet_addr(addr, len);
+    cidr->u.in.addr = ngx_inet_addr(addr, len); //转为无符号 32 位整数
 
-    if (cidr->u.in.addr != INADDR_NONE) {
+    if (cidr->u.in.addr != INADDR_NONE) {       //是一个合法的ipv4地址
         cidr->family = AF_INET;
 
         if (mask == NULL) {
@@ -399,8 +411,9 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
         }
 
 #if (NGX_HAVE_INET6)
+    //尝试解析ipv6地址
     } else if (ngx_inet6_addr(addr, len, cidr->u.in6.addr.s6_addr) == NGX_OK) {
-        cidr->family = AF_INET6;
+        cidr->family = AF_INET6;      //是一个合法的ipv6地址
 
         if (mask == NULL) {
             ngx_memset(cidr->u.in6.mask.s6_addr, 0xff, 16);
@@ -412,10 +425,12 @@ ngx_ptocidr(ngx_str_t *text, ngx_cidr_t *cidr)
         return NGX_ERROR;
     }
 
+    //此处说明mask != NULL
     mask++;
 
+    //mask转为整数
     shift = ngx_atoi(mask, last - mask);
-    if (shift == NGX_ERROR) {
+    if (shift == NGX_ERROR) {   //非整数
         return NGX_ERROR;
     }
 

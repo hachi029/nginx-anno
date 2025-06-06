@@ -75,12 +75,18 @@
 
 
 struct ngx_command_s {
-    ngx_str_t             name;
-    ngx_uint_t            type;
+    ngx_str_t             name;     // 配置项名称
+    ngx_uint_t            type;     //type将指定配置项可以出现的位置和可以携带的参数个数
+    /**
+     * 配置解析方法
+     * conf就是HTTP框架传给用户的在 ngx_http_mytest_create_loc_conf回调方法中分配的结构体ngx_http_mytest_conf_t
+     * cf->args是 1个ngx_array_t队列，它的成员都是 ngx_str_t结构。我们用 value指向 ngx_array_t的 elts内容，其中value[1]就是第 1个参数，同理， value[2]是第 2个参数
+     * 
+     */
     char               *(*set)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-    ngx_uint_t            conf;
-    ngx_uint_t            offset;
-    void                 *post;
+    ngx_uint_t            conf;     //在配置文件中的偏移量, NGX_HTTP_(MAIN|SRV|LOC)_CONF_OFFSET
+    ngx_uint_t            offset;   // 
+    void                 *post;     // 配置项读取后的处理方法，必须是 ngx_conf_post_t结构的指针
 };
 
 #define ngx_null_command  { ngx_null_string, 0, NULL, 0, 0, NULL }
@@ -113,17 +119,28 @@ typedef char *(*ngx_conf_handler_pt)(ngx_conf_t *cf,
     ngx_command_t *dummy, void *conf);
 
 
+ /**
+  * 代表一个配置项, 表示解析当前配置指令的运行环境数据（Context）
+  * 进入和退出一个配置块都会变更ngx_conf_s
+  */
 struct ngx_conf_s {
-    char                 *name;
-    ngx_array_t          *args;
+    char                 *name;     //配置名称
+    //保存解析到的指令字符串,0是指令名
+    ngx_array_t          *args;     //配置参数，数组value[1]就是第 1个参数，同理， value[2]是第 2个参数
 
+    // 当前配置的cycle结构体，用于添加监听端口
     ngx_cycle_t          *cycle;
     ngx_pool_t           *pool;
     ngx_pool_t           *temp_pool;
     ngx_conf_file_t      *conf_file;
     ngx_log_t            *log;
 
-    void                 *ctx;
+    // 重要参数，解析时的上下文
+    // 解析开始时是cycle->conf_ctx，即普通数组
+    // 在stream{}里是ngx_stream_conf_ctx_t
+    // 在events{}里是个存储void*的数组，即void**
+    // 在http{}里是ngx_http_conf_ctx_t
+    void                 *ctx;  //代表
     ngx_uint_t            module_type;
     ngx_uint_t            cmd_type;
 

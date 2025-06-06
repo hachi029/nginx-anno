@@ -55,6 +55,8 @@ typedef struct {
     unsigned             redo:1;
     unsigned             done:1;
     unsigned             nomem:1;
+    //proxy_buffering 表示
+    //https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering
     unsigned             buffering:1;
     unsigned             zlib_ng:1;
     unsigned             state_allocated:1;

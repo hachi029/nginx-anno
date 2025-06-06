@@ -57,7 +57,9 @@ ngx_file_aio_init(ngx_file_t *file, ngx_pool_t *pool)
     return NGX_OK;
 }
 
-
+/**
+ * 在打开文件异步I/O后，这个方法将会负责磁盘文件的读取
+ */
 ssize_t
 ngx_file_aio_read(ngx_file_t *file, u_char *buf, size_t size, off_t offset,
     ngx_pool_t *pool)
@@ -199,7 +201,12 @@ ngx_file_aio_result(ngx_file_t *file, ngx_event_aio_t *aio, ngx_event_t *ev)
     return n;
 }
 
-
+/**
+ * ngx_file_aio_read方法会向异步I/O上下文中添加事件，该epoll_wait在通过 ngx_eventfd描述符检测到异步I/O事件后，
+ * 会再调用ngx_epoll_eventfd_handler方法将io_event 事件取出来，
+ * 放入ngx_posted_events队列中延后执行。ngx_posted_events队列中的事件执行时，
+ * 则会调用ngx_file_aio_event_handler方法
+ */
 static void
 ngx_file_aio_event_handler(ngx_event_t *ev)
 {
@@ -211,6 +218,8 @@ ngx_file_aio_event_handler(ngx_event_t *ev)
                    "aio event handler fd:%d %V", aio->fd, &aio->file->name);
 
     if (ngx_file_aio_result(aio->file, aio, ev) != NGX_AGAIN) {
+        //调用了ngx_event_aio_t结构体的handler回调,这个回调方法是由真正的业务模块实现的，也就是说，任一个业务模块想使用文件异步I/O，
+        //就可以实现handler方法，这 样，在文件异步操作完成后，该方法就会被回调
         aio->handler(ev);
     }
 }

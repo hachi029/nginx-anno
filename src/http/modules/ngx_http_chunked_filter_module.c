@@ -23,6 +23,7 @@ static ngx_chain_t *ngx_http_chunked_create_trailers(ngx_http_request_t *r,
 
 static ngx_http_module_t  ngx_http_chunked_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //安装了header和body的filter
     ngx_http_chunked_filter_init,          /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -62,6 +63,7 @@ ngx_http_chunked_header_filter(ngx_http_request_t *r)
     ngx_http_core_loc_conf_t       *clcf;
     ngx_http_chunked_filter_ctx_t  *ctx;
 
+    //没有响应体，不需要处理
     if (r->headers_out.status == NGX_HTTP_NOT_MODIFIED
         || r->headers_out.status == NGX_HTTP_NO_CONTENT
         || r->headers_out.status < NGX_HTTP_OK
@@ -71,20 +73,22 @@ ngx_http_chunked_header_filter(ngx_http_request_t *r)
         return ngx_http_next_header_filter(r);
     }
 
+    //没有设置content_length
     if (r->headers_out.content_length_n == -1
         || r->expect_trailers)
     {
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-        if (r->http_version >= NGX_HTTP_VERSION_11
-            && clcf->chunked_transfer_encoding)
+        if (r->http_version >= NGX_HTTP_VERSION_11      //http版本大于1.1,且enable分块传输
+            && clcf->chunked_transfer_encoding)     //配置项 https://nginx.org/en/docs/http/ngx_http_core_module.html#chunked_transfer_encoding
         {
             if (r->expect_trailers) {
                 ngx_http_clear_content_length(r);
             }
 
-            r->chunked = 1;
+            r->chunked = 1;     //标识需要分块传输
 
+            //分配上下文结构体
             ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_chunked_filter_ctx_t));
             if (ctx == NULL) {
                 return NGX_ERROR;
@@ -93,6 +97,7 @@ ngx_http_chunked_header_filter(ngx_http_request_t *r)
             ngx_http_set_ctx(r, ctx, ngx_http_chunked_filter_module);
 
         } else if (r->headers_out.content_length_n == -1) {
+            //如果没有设置content_length，且(http版本不支持分块传输或关闭了分块传输), 关闭keepalive
             r->keepalive = 0;
         }
     }
@@ -111,7 +116,7 @@ ngx_http_chunked_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_chain_t                    *out, *cl, *tl, **ll;
     ngx_http_chunked_filter_ctx_t  *ctx;
 
-    if (in == NULL || !r->chunked || r->header_only) {
+    if (in == NULL || !r->chunked || r->header_only) {  //不需要处理
         return ngx_http_next_body_filter(r, in);
     }
 
@@ -123,6 +128,7 @@ ngx_http_chunked_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     size = 0;
     cl = in;
 
+    //复制in链表到out链表
     for ( ;; ) {
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "http chunk: %O", ngx_buf_size(cl->buf));
@@ -160,7 +166,7 @@ ngx_http_chunked_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         b = tl->buf;
         chunk = b->start;
 
-        if (chunk == NULL) {
+        if (chunk == NULL) {        //最后一个chunk
             /* the "0000000000000000" is 64-bit hexadecimal string */
 
             chunk = ngx_palloc(r->pool, sizeof("0000000000000000" CRLF) - 1);
@@ -176,13 +182,13 @@ ngx_http_chunked_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         b->memory = 0;
         b->temporary = 1;
         b->pos = chunk;
-        b->last = ngx_sprintf(chunk, "%xO" CRLF, size);
+        b->last = ngx_sprintf(chunk, "%xO" CRLF, size);     //复制buf
 
         tl->next = out;
         out = tl;
     }
 
-    if (cl->buf->last_buf) {
+    if (cl->buf->last_buf) {        //如果是最后一个buf
         tl = ngx_http_chunked_create_trailers(r, ctx);
         if (tl == NULL) {
             return NGX_ERROR;

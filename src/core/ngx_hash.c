@@ -8,7 +8,14 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 
-
+/**
+ * 用于从hash表中查询元素
+ * hash是散列表结构体的指针
+ * key则是根据散列方法算出来的散列关键字
+ * name和len则表示实际关键字的地址与长度
+ * 
+ * 返回散列表中关键字与name、len指定关键字完全相同的槽中，ngx_hash_elt_t结构体中value成员所指向的用户 数据
+ */
 void *
 ngx_hash_find(ngx_hash_t *hash, ngx_uint_t key, u_char *name, size_t len)
 {
@@ -631,6 +638,9 @@ ngx_hash_wildcard_init(ngx_hash_init_t *hinit, ngx_hash_key_t *names,
 }
 
 
+/**
+ * 字符串关键字hash函数, 返回hash值
+ */
 ngx_uint_t
 ngx_hash_key(u_char *data, size_t len)
 {
@@ -646,6 +656,10 @@ ngx_hash_key(u_char *data, size_t len)
 }
 
 
+/**
+ * 字符串关键字转为小写后的hash函数
+ * 将data转小写，同时返回hash
+ */
 ngx_uint_t
 ngx_hash_key_lc(u_char *data, size_t len)
 {
@@ -661,6 +675,9 @@ ngx_hash_key_lc(u_char *data, size_t len)
 }
 
 
+/**
+ * 小写的同时计算hash值，结果存入dst中
+ */
 ngx_uint_t
 ngx_hash_strlow(u_char *dst, u_char *src, size_t n)
 {
@@ -734,6 +751,18 @@ ngx_hash_keys_array_init(ngx_hash_keys_arrays_t *ha, ngx_uint_t type)
 }
 
 
+/**
+ * ngx_hash_keys_arrays_t是初始化hash所需的参数。
+ * 本方法向向ngx_hash_keys_arrays_t中加入散列表元素
+ * 
+ * key是添加元素的关键字
+ * value 是关键字对应的用户数据指针
+ * flags NGX_HASH_WILDCARD_KEY/NGX_HASH_READONLY_KEY/
+ * 
+ * 
+ * 总体逻辑是，根据key是精确、前缀、后缀匹配，将其加入到ha.key_hash、dns_wc_tail、dns_wc_head 中
+ * 
+ */
 ngx_int_t
 ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
     ngx_uint_t flags)
@@ -747,6 +776,7 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
 
     last = key->len;
 
+    //1. 带有WILDCARD的key
     if (flags & NGX_HASH_WILDCARD_KEY) {
 
         /*
@@ -759,16 +789,16 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
         for (i = 0; i < key->len; i++) {
 
             if (key->data[i] == '*') {
-                if (++n > 1) {
+                if (++n > 1) {      //限制只能有一个 *
                     return NGX_DECLINED;
                 }
             }
 
             if (key->data[i] == '.' && key->data[i + 1] == '.') {
-                return NGX_DECLINED;
+                return NGX_DECLINED;        //有两个连续的 .
             }
 
-            if (key->data[i] == '\0') {
+            if (key->data[i] == '\0') {     //不允许有'\0'
                 return NGX_DECLINED;
             }
         }
@@ -780,11 +810,13 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
 
         if (key->len > 2) {
 
+            //后缀格式 *.xxxx
             if (key->data[0] == '*' && key->data[1] == '.') {
                 skip = 2;
                 goto wildcard;
             }
 
+            //前缀格式xxx.*
             if (key->data[i - 2] == '.' && key->data[i - 1] == '*') {
                 skip = 0;
                 last -= 2;
@@ -793,39 +825,46 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
         }
 
         if (n) {
+            //有*，但既不是*.xxx格式,也不是xxx.*格式
             return NGX_DECLINED;
         }
     }
 
     /* exact hash */
 
+    //2. 此处表示精确匹配
     k = 0;
 
     for (i = 0; i < last; i++) {
+        //如果没有READONLY标识，将key转为小写
         if (!(flags & NGX_HASH_READONLY_KEY)) {
             key->data[i] = ngx_tolower(key->data[i]);
         }
-        k = ngx_hash(k, key->data[i]);
+        k = ngx_hash(k, key->data[i]);  //计算hash值
     }
 
-    k %= ha->hsize;
+    k %= ha->hsize; //hsize为槽个数
 
     /* check conflicts in exact hash */
 
+    //找到k槽位对应的ngx_string动态数组
     name = ha->keys_hash[k].elts;
 
     if (name) {
+        //遍历动态数组
         for (i = 0; i < ha->keys_hash[k].nelts; i++) {
             if (last != name[i].len) {
                 continue;
             }
 
+            //已经有相同name的key
             if (ngx_strncmp(key->data, name[i].data, last) == 0) {
                 return NGX_BUSY;
             }
         }
 
     } else {
+        //k槽位对应的动态数组不存在，创建一个
         if (ngx_array_init(&ha->keys_hash[k], ha->temp_pool, 4,
                            sizeof(ngx_str_t))
             != NGX_OK)
@@ -834,6 +873,7 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
         }
     }
 
+    //将其加入到k槽位对于的动态数组 ha->keys_hash 中
     name = ngx_array_push(&ha->keys_hash[k]);
     if (name == NULL) {
         return NGX_ERROR;
@@ -841,6 +881,7 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
 
     *name = *key;
 
+    //构建包含key和value的hk, 加入动态数组ha->keys中
     hk = ngx_array_push(&ha->keys);
     if (hk == NULL) {
         return NGX_ERROR;
@@ -853,10 +894,12 @@ ngx_hash_add_key(ngx_hash_keys_arrays_t *ha, ngx_str_t *key, void *value,
     return NGX_OK;
 
 
+    //3. 包含wildcard的关键字处理
 wildcard:
 
     /* wildcard hash */
 
+    //转为小写，同时计算hash
     k = ngx_hash_strlow(&key->data[skip], &key->data[skip], last - skip);
 
     k %= ha->hsize;
@@ -865,6 +908,7 @@ wildcard:
 
         /* check conflicts in exact hash for ".example.com" */
 
+        //查看精确匹配keys_hash中是否有相同的关键字
         name = ha->keys_hash[k].elts;
 
         if (name) {
@@ -876,11 +920,12 @@ wildcard:
                 }
 
                 if (ngx_strncmp(&key->data[1], name[i].data, len) == 0) {
-                    return NGX_BUSY;
+                    return NGX_BUSY;    //找到返回失败
                 }
             }
 
         } else {
+            //初始化槽位上的动态数组
             if (ngx_array_init(&ha->keys_hash[k], ha->temp_pool, 4,
                                sizeof(ngx_str_t))
                 != NGX_OK)
@@ -889,17 +934,19 @@ wildcard:
             }
         }
 
+        //将关键字加入到k槽位对于的动态数组中
         name = ngx_array_push(&ha->keys_hash[k]);
         if (name == NULL) {
             return NGX_ERROR;
         }
 
-        name->len = last - 1;
+        name->len = last - 1;   //移除首个.
         name->data = ngx_pnalloc(ha->temp_pool, name->len);
         if (name->data == NULL) {
             return NGX_ERROR;
         }
 
+        //分配新的存储空间
         ngx_memcpy(name->data, &key->data[1], name->len);
     }
 
@@ -919,7 +966,7 @@ wildcard:
         len = 0;
         n = 0;
 
-        for (i = last - 1; i; i--) {
+        for (i = last - 1; i; i--) {        //从后往前
             if (key->data[i] == '.') {
                 ngx_memcpy(&p[n], &key->data[i + 1], len);
                 n += len;

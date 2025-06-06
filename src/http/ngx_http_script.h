@@ -14,6 +14,10 @@
 #include <ngx_http.h>
 
 
+/**
+ * 同一段脚本被编译进Nginx中，在不同的请求里执行时效果是完全不同的，
+ * 所以，每一个请求都必须有其独有的脚本执行上下文，或者称为脚本引擎，这是最关键的数据结构
+ */
 typedef struct {
     u_char                     *ip;
     u_char                     *pos;
@@ -36,15 +40,18 @@ typedef struct {
 } ngx_http_script_engine_t;
 
 
+/**
+ * 编译复杂变量时，需传入此结构体
+ */
 typedef struct {
     ngx_conf_t                 *cf;
-    ngx_str_t                  *source;
+    ngx_str_t                  *source;     //复杂变量的原始值
 
     ngx_array_t               **flushes;
     ngx_array_t               **lengths;
     ngx_array_t               **values;
 
-    ngx_uint_t                  variables;
+    ngx_uint_t                  variables;      //包含变量的个数，即$字符的个数
     ngx_uint_t                  ncaptures;
     ngx_uint_t                  captures_mask;
     ngx_uint_t                  size;
@@ -63,6 +70,10 @@ typedef struct {
 } ngx_http_script_compile_t;
 
 
+/**
+ * 表示一个复杂变量（脚本），含有多个'$'的字符串
+ * 需要在运行时计算
+ */
 typedef struct {
     ngx_str_t                   value;
     ngx_uint_t                 *flushes;
@@ -75,10 +86,11 @@ typedef struct {
 } ngx_http_complex_value_t;
 
 
+// 对字符串进行“编译”，之后才能正确得到变量值
 typedef struct {
-    ngx_conf_t                 *cf;
-    ngx_str_t                  *value;
-    ngx_http_complex_value_t   *complex_value;
+    ngx_conf_t                 *cf;     // nginx的配置结构体指针
+    ngx_str_t                  *value;  // 原始字符串
+    ngx_http_complex_value_t   *complex_value;  // 编译后的输出结果，即复杂变量
 
     unsigned                    zero:1;
     unsigned                    conf_prefix:1;

@@ -63,9 +63,9 @@ ngx_chain_t *ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in,
 
 typedef struct {
     struct iovec  *iovs;
-    ngx_uint_t     count;
-    size_t         size;
-    ngx_uint_t     nalloc;
+    ngx_uint_t     count;       //实际使用的元素个数
+    size_t         size;        //所有元素的总大小
+    ngx_uint_t     nalloc;      //iovs数组的元素个数
 } ngx_iovec_t;
 
 ngx_chain_t *ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in,

@@ -45,8 +45,8 @@ typedef union {
 
 
 typedef struct {
-    in_addr_t                 addr;
-    in_addr_t                 mask;
+    in_addr_t                 addr;     //无符号32位整数
+    in_addr_t                 mask;     //
 } ngx_in_cidr_t;
 
 
@@ -61,7 +61,7 @@ typedef struct {
 
 
 typedef struct {
-    ngx_uint_t                family;
+    ngx_uint_t                family;   //AF_INET/AF_INET6
     union {
         ngx_in_cidr_t         in;
 #if (NGX_HAVE_INET6)

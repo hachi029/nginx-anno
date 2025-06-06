@@ -14,9 +14,9 @@
 
 
 typedef struct {
-    time_t      sec;
-    ngx_uint_t  msec;
-    ngx_int_t   gmtoff;
+    time_t      sec;        // 格林威治时间 1970年 1月1日凌晨 0点0分0秒到当前时间的秒数
+    ngx_uint_t  msec;   // sec成员只能精确到秒， msec则是当前时间相对于 sec的毫秒偏移量
+    ngx_int_t   gmtoff; //时区
 } ngx_time_t;
 
 

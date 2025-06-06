@@ -9,7 +9,9 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-
+/**
+ * https://nginx.org/en/docs/http/ngx_http_mirror_module.html
+ */
 typedef struct {
     ngx_array_t  *mirror;
     ngx_flag_t    request_body;
@@ -42,7 +44,7 @@ static ngx_command_t  ngx_http_mirror_commands[] = {
 
     { ngx_string("mirror_request_body"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
-      ngx_conf_set_flag_slot,
+      ngx_conf_set_flag_slot,       //是否开启请求体的镜像
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_mirror_loc_conf_t, request_body),
       NULL },
@@ -53,6 +55,7 @@ static ngx_command_t  ngx_http_mirror_commands[] = {
 
 static ngx_http_module_t  ngx_http_mirror_module_ctx = {
     NULL,                                  /* preconfiguration */
+    // 安装 NGX_HTTP_PRECONTENT_PHASE
     ngx_http_mirror_init,                  /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -82,6 +85,7 @@ ngx_module_t  ngx_http_mirror_module = {
 };
 
 
+//PRECONTENT阶段的handler
 static ngx_int_t
 ngx_http_mirror_handler(ngx_http_request_t *r)
 {
@@ -89,19 +93,19 @@ ngx_http_mirror_handler(ngx_http_request_t *r)
     ngx_http_mirror_ctx_t       *ctx;
     ngx_http_mirror_loc_conf_t  *mlcf;
 
-    if (r != r->main) {
+    if (r != r->main) {     //如果不是主请求，直接返回
         return NGX_DECLINED;
     }
 
     mlcf = ngx_http_get_module_loc_conf(r, ngx_http_mirror_module);
 
-    if (mlcf->mirror == NULL) {
+    if (mlcf->mirror == NULL) {     //未开启
         return NGX_DECLINED;
     }
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0, "mirror handler");
 
-    if (mlcf->request_body) {
+    if (mlcf->request_body) {       //如果开启了请求体的镜像
         ctx = ngx_http_get_module_ctx(r, ngx_http_mirror_module);
 
         if (ctx) {
@@ -115,8 +119,9 @@ ngx_http_mirror_handler(ngx_http_request_t *r)
 
         ctx->status = NGX_DONE;
 
-        ngx_http_set_ctx(r, ctx, ngx_http_mirror_module);
+        ngx_http_set_ctx(r, ctx, ngx_http_mirror_module);       //设置上下文
 
+        //读取请求体，读取完请求体后，调用ngx_http_mirror_body_handler，发起子请求
         rc = ngx_http_read_client_request_body(r, ngx_http_mirror_body_handler);
         if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
             return rc;
@@ -126,10 +131,11 @@ ngx_http_mirror_handler(ngx_http_request_t *r)
         return NGX_DONE;
     }
 
+    //未开启请求体的镜像，不用读取请求体，直接发起子请求
     return ngx_http_mirror_handler_internal(r);
 }
 
-
+//开启了请求体的镜像，读取完请求体后，调用ngx_http_mirror_body_handler
 static void
 ngx_http_mirror_body_handler(ngx_http_request_t *r)
 {
@@ -139,8 +145,10 @@ ngx_http_mirror_body_handler(ngx_http_request_t *r)
 
     ctx->status = ngx_http_mirror_handler_internal(r);
 
+    //保留请求体，确保后续阶段（如 proxy_pass）仍可访问完整的请求体内容
     r->preserve_body = 1;
-
+    
+    //继续后续的处理模块
     r->write_event_handler = ngx_http_core_run_phases;
     ngx_http_core_run_phases(r);
 }
@@ -158,7 +166,9 @@ ngx_http_mirror_handler_internal(ngx_http_request_t *r)
 
     name = mlcf->mirror->elts;
 
+    //以子请求的方式，向每个mirror指令配置的uri发起请求
     for (i = 0; i < mlcf->mirror->nelts; i++) {
+        //子请求会复用当前请求的请求体
         if (ngx_http_subrequest(r, &name[i], &r->args, &sr, NULL,
                                 NGX_HTTP_SUBREQUEST_BACKGROUND)
             != NGX_OK)
@@ -166,7 +176,7 @@ ngx_http_mirror_handler_internal(ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        sr->header_only = 1;
+        sr->header_only = 1;        //只请求头部
         sr->method = r->method;
         sr->method_name = r->method_name;
     }
@@ -204,18 +214,20 @@ ngx_http_mirror_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
-
+//解析mirror配置指令
+//	mirror uri | off; 可以配置多个uri
 static char *
 ngx_http_mirror(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
+    //本模块的配置结构
     ngx_http_mirror_loc_conf_t *mlcf = conf;
 
     ngx_str_t  *value, *s;
 
     value = cf->args->elts;
 
-    if (ngx_strcmp(value[1].data, "off") == 0) {
-        if (mlcf->mirror != NGX_CONF_UNSET_PTR) {
+    if (ngx_strcmp(value[1].data, "off") == 0) {        //为off
+        if (mlcf->mirror != NGX_CONF_UNSET_PTR) {       //已经配置过了
             return "is duplicate";
         }
 
@@ -223,17 +235,18 @@ ngx_http_mirror(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_OK;
     }
 
-    if (mlcf->mirror == NULL) {
+    if (mlcf->mirror == NULL) {     //默认值应该是NGX_CONF_UNSET_PTR， 如果是NULL，表示解析过了
         return "is duplicate";
     }
 
-    if (mlcf->mirror == NGX_CONF_UNSET_PTR) {
+    if (mlcf->mirror == NGX_CONF_UNSET_PTR) {   //第一次解析
         mlcf->mirror = ngx_array_create(cf->pool, 4, sizeof(ngx_str_t));
         if (mlcf->mirror == NULL) {
             return NGX_CONF_ERROR;
         }
     }
 
+    //向array中添加一个元素
     s = ngx_array_push(mlcf->mirror);
     if (s == NULL) {
         return NGX_CONF_ERROR;
@@ -244,7 +257,7 @@ ngx_http_mirror(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
-
+//安装NGX_HTTP_PRECONTENT_PHASE阶段的handler
 static ngx_int_t
 ngx_http_mirror_init(ngx_conf_t *cf)
 {
@@ -258,7 +271,7 @@ ngx_http_mirror_init(ngx_conf_t *cf)
         return NGX_ERROR;
     }
 
-    *h = ngx_http_mirror_handler;
+    *h = ngx_http_mirror_handler;  //handler
 
     return NGX_OK;
 }

@@ -194,6 +194,7 @@ ngx_http_memcached_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    //创建r->upstream
     if (ngx_http_upstream_create(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -205,7 +206,7 @@ ngx_http_memcached_handler(ngx_http_request_t *r)
 
     mlcf = ngx_http_get_module_loc_conf(r, ngx_http_memcached_module);
 
-    u->conf = &mlcf->upstream;
+    u->conf = &mlcf->upstream;      //设置ngx_http_upstream_conf_t结构体，主要是各种超时配置
 
     u->create_request = ngx_http_memcached_create_request;
     u->reinit_request = ngx_http_memcached_reinit_request;
@@ -233,7 +234,9 @@ ngx_http_memcached_handler(ngx_http_request_t *r)
     return NGX_DONE;
 }
 
-
+/**
+ * 构造发往上游服务器的请求
+ */
 static ngx_int_t
 ngx_http_memcached_create_request(ngx_http_request_t *r)
 {
@@ -272,6 +275,7 @@ ngx_http_memcached_create_request(ngx_http_request_t *r)
     cl->buf = b;
     cl->next = NULL;
 
+    // 这里的r->upstream->request_bufs是一个链表，指向上游服务器请求的buf
     r->upstream->request_bufs = cl;
 
     *b->last++ = 'g'; *b->last++ = 'e'; *b->last++ = 't'; *b->last++ = ' ';

@@ -10,28 +10,57 @@
 #include <nginx.h>
 
 
+// 显示帮助信息，1.10增加-T，可以dump整个配置文件
 static void ngx_show_version_info(void);
+// 检查NGINX环境变量，获取之前监听的socket
 static ngx_int_t ngx_add_inherited_sockets(ngx_cycle_t *cycle);
+// 1.11.x新增函数
 static void ngx_cleanup_environment(void *data);
+// 1.25.2新增函数
 static void ngx_cleanup_environment_variable(void *data);
+// nginx自己实现的命令行参数解析
 static ngx_int_t ngx_get_options(int argc, char *const *argv);
+// 设置cycle->prefix/cycle->conf_prefix等成员
 static ngx_int_t ngx_process_options(ngx_cycle_t *cycle);
+// 保存命令行参数到全局变量ngx_argc/ngx_argv
 static ngx_int_t ngx_save_argv(ngx_cycle_t *cycle, int argc, char *const *argv);
+// ngx_core_module的函数指针表，创建配置结构体
 static void *ngx_core_module_create_conf(ngx_cycle_t *cycle);
 static char *ngx_core_module_init_conf(ngx_cycle_t *cycle, void *conf);
+// 解析user等核心配置指令
 static char *ngx_set_user(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_set_env(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *ngx_set_priority(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+// 设置绑定cpu的掩码
 static char *ngx_set_cpu_affinity(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_set_worker_processes(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+// 1.10新的动态模块特性，调用dlopen
+// 加载动态模块的指令
+// 不能在http/event里使用，而且要在http/event之前
+// 否则会因为modules_used不允许加载动态模块
+//
+// 打开动态库文件
+// 设置内存池销毁时的清理动作，关闭动态库
+// 使用"ngx_modules"取动态库里的模块数组
+// 使用"ngx_module_names"取动态库里的模块名字数组
+// 使用"ngx_module_order"取动态库里的模块顺序数组
+// 模块顺序只对http filter模块有意义
+// 所以可以没有，不需要检查
+// 遍历动态库里的模块数组
+// 流程类似ngx_preinit_modules
+// 调用ngx_add_module添加模块
 static char *ngx_load_module(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+// 调用dlclose关闭动态库
+// #define ngx_dlclose(handle)        dlclose(handle)
 #if (NGX_HAVE_DLOPEN)
 static void ngx_unload_module(void *data);
 #endif
 
 
+// debug point枚举定义，宏的定义在ngx_cycle.h
+// in ngx_process.c ngx_debug_point
 static ngx_conf_enum_t  ngx_debug_points[] = {
     { ngx_string("stop"), NGX_DEBUG_POINTS_STOP },
     { ngx_string("abort"), NGX_DEBUG_POINTS_ABORT },
@@ -111,6 +140,8 @@ static ngx_command_t  ngx_core_commands[] = {
       0,
       NULL },
 
+    // RLIMIT_NOFILE,进程可打开的最大文件描述符数量，超出将产生EMFILE错误
+    // 在ngx_event_module_init里检查
     { ngx_string("worker_rlimit_nofile"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
@@ -118,6 +149,7 @@ static ngx_command_t  ngx_core_commands[] = {
       offsetof(ngx_core_conf_t, rlimit_nofile),
       NULL },
 
+    // coredump文件最大长度
     { ngx_string("worker_rlimit_core"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_off_slot,
@@ -132,6 +164,7 @@ static ngx_command_t  ngx_core_commands[] = {
       offsetof(ngx_core_conf_t, shutdown_timeout),
       NULL },
 
+    // coredump文件的存放路径
     { ngx_string("working_directory"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
@@ -145,7 +178,11 @@ static ngx_command_t  ngx_core_commands[] = {
       0,
       0,
       NULL },
+    // old threads 在1.9.x里已经被删除，不再使用
 
+    // 加载动态模块的指令
+    // 不能在http/event里使用，而且要在http/event之前
+    // 否则会因为modules_used不允许加载动态模块
     { ngx_string("load_module"),
       NGX_MAIN_CONF|NGX_DIRECT_CONF|NGX_CONF_TAKE1,
       ngx_load_module,
@@ -157,6 +194,8 @@ static ngx_command_t  ngx_core_commands[] = {
 };
 
 
+// ngx_core_module的函数指针表，创建配置结构体
+// 两个函数都在本文件内,只是简单地创建并初始化成员
 static ngx_core_module_t  ngx_core_module_ctx = {
     ngx_string("core"),
     ngx_core_module_create_conf,
@@ -164,6 +203,7 @@ static ngx_core_module_t  ngx_core_module_ctx = {
 };
 
 
+// ngx_core_module模块定义，指定指令集和函数指针表
 ngx_module_t  ngx_core_module = {
     NGX_MODULE_V1,
     &ngx_core_module_ctx,                  /* module context */
@@ -180,19 +220,40 @@ ngx_module_t  ngx_core_module = {
 };
 
 
-static ngx_uint_t   ngx_show_help;
-static ngx_uint_t   ngx_show_version;
-static ngx_uint_t   ngx_show_configure;
-static u_char      *ngx_prefix;
-static u_char      *ngx_error_log;
-static u_char      *ngx_conf_file;
-static u_char      *ngx_conf_params;
-static char        *ngx_signal;
+// 1.10引入动态模块后此变量不再使用
+// 模块计数器，声明在ngx_conf_file.h, 在main里统计得到总数
+// ngx_uint_t          ngx_max_module;
+
+// 解析命令行的标志变量,ngx_get_options()设置
+// 仅在本文件里使用，woker等进程无关
+static ngx_uint_t   ngx_show_help;          // 显示帮助信息
+static ngx_uint_t   ngx_show_version;       // 显示版本信息
+static ngx_uint_t   ngx_show_configure;     // 显示编译配置信息
+
+// 启动时的参数,ngx_get_options()设置
+// 仅在本文件里使用，woker等进程无关
+// 前三个是u_char是因为要赋值给ngx_str_t
+// ngx_signal用char*是因为要做字符串比较，不需要存储
+static u_char      *ngx_prefix;             // -p参数，工作路径
+static u_char      *ngx_error_log;          // 1.19.5, errorlog filename
+static u_char      *ngx_conf_file;          // -c参数，配置文件
+static u_char      *ngx_conf_params;        // -g参数
+static char        *ngx_signal;             // -s参数，unix信号, stop/quit/reload/reopen/
 
 
 static char **ngx_os_environ;
 
 
+// nginx启动的入口函数
+// 相关文件ngx_process_cycle.c/ngx_posix_init.c/ngx_process.c
+// 设置重要的指针volatile ngx_cycle_t  *ngx_cycle;
+//
+// 1)解析命令行参数,显示帮助信息
+// 2)初始化操作系统调用接口函数ngx_os_io = ngx_linux_io;
+// 3)根据命令行参数等建立一个基本的cycle
+// 4)初始化模块数组ngx_modules
+// 5)核心操作，调用ngx_init_cycle创建进程使用的cycle,解析配置文件,启动监听端口
+// 6)启动单进程或多进程
 int ngx_cdecl
 main(int argc, char *const *argv)
 {
@@ -205,6 +266,8 @@ main(int argc, char *const *argv)
 
     ngx_debug_init();
 
+    // 解析命令行参数, 本文件内查找ngx_get_options
+    // 设置ngx_show_version/ngx_show_help等变量
     if (ngx_strerror_init() != NGX_OK) {
         return 1;
     }
@@ -213,9 +276,15 @@ main(int argc, char *const *argv)
         return 1;
     }
 
+    // 1.9.x改到ngx_show_version_info()
     if (ngx_show_version) {
+
+        // 显示帮助信息，1.10增加-T，可以dump整个配置文件
         ngx_show_version_info();
 
+        // 1.9.x ngx_show_version_info()结束
+
+        //如果是-t参数，那么接下来要走流程检查配置但不启动
         if (!ngx_test_config) {
             return 0;
         }
@@ -223,12 +292,23 @@ main(int argc, char *const *argv)
 
     /* TODO */ ngx_max_sockets = -1;
 
+    // 在ngx_os_init函数里设置（os/unix/ngx_posix_init.c）
+    // 使用系统调用getrlimit(RLIMIT_NOFILE, &rlmt)
+    // 是nginx能够打开的最多描述数量，但似乎并没有使用
+    /* TODO */ ngx_max_sockets = -1;
+
+    // ngx_times.c,初始化各个cache时间变量
+    // 调用ngx_time_update()，得到当前的时间
     ngx_time_init();
 
 #if (NGX_PCRE)
     ngx_regex_init();
 #endif
 
+    // 定义在os/unix/ngx_process_cycle.c : ngx_pid_t     ngx_pid;
+    // ngx_process.h : #define ngx_getpid   getpid
+    // 获取当前进程也就是master进程的pid
+    // 如果是master/worker，会fork出新的子进程，见os/unix/ngx_daemon.c
     ngx_pid = ngx_getpid();
     ngx_parent = ngx_getppid();
 
@@ -290,6 +370,7 @@ main(int argc, char *const *argv)
         return 1;
     }
 
+    //创建并初始化全局变量ngx_cycle
     cycle = ngx_init_cycle(&init_cycle);
     if (cycle == NULL) {
         if (ngx_test_config) {
@@ -326,6 +407,7 @@ main(int argc, char *const *argv)
         return 0;
     }
 
+    //单一进程
     if (ngx_signal) {
         return ngx_signal_process(cycle, ngx_signal);
     }
@@ -377,6 +459,7 @@ main(int argc, char *const *argv)
 
     ngx_use_stderr = 0;
 
+    //
     if (ngx_process == NGX_PROCESS_SINGLE) {
         ngx_single_process_cycle(cycle);
 

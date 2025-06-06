@@ -139,7 +139,10 @@ ngx_open_file_cache_cleanup(void *data)
     }
 }
 
-
+/**
+ * https://nginx.org/en/docs/http/ngx_http_core_module.html#open_file_cache
+* 打开文件缓存
+ */
 ngx_int_t
 ngx_open_cached_file(ngx_open_file_cache_t *cache, ngx_str_t *name,
     ngx_open_file_info_t *of, ngx_pool_t *pool)

@@ -34,7 +34,9 @@ ngx_uint_t             ngx_quiet_mode;
 static ngx_connection_t  dumb;
 /* STUB */
 
-
+/**
+ * 创建并初始化全局变量ngx_cycle
+ */
 ngx_cycle_t *
 ngx_init_cycle(ngx_cycle_t *old_cycle)
 {
@@ -72,12 +74,14 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
     pool->log = log;
 
+    //创建ngx_cycle_t实例
     cycle = ngx_pcalloc(pool, sizeof(ngx_cycle_t));
     if (cycle == NULL) {
         ngx_destroy_pool(pool);
         return NULL;
     }
 
+    //初始化相关配置参数
     cycle->pool = pool;
     cycle->log = log;
     cycle->old_cycle = old_cycle;
@@ -228,6 +232,8 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
+    //每个模块都必须有相应的数据结构来存储 配置文件中的各配置项，创建这些数据结构的工作都需要在这一步进行
+    //只关心 NGX_CORE_MODULE核心模块，这也是为了降低框架的复杂度
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->type != NGX_CORE_MODULE) {
             continue;
@@ -235,6 +241,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
         module = cycle->modules[i]->ctx;
 
+        //调用所有核心模 块的create_conf方法
         if (module->create_conf) {
             rv = module->create_conf(cycle);
             if (rv == NULL) {
@@ -281,6 +288,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
         return NULL;
     }
 
+    //调用配置模块提供的解析配置项方法。
+    //对于任一个配置项，将会检查所有核心模块以找出对它感兴趣的模块，
+    //并调用该模块在ngx_command_t 结构体中定义的配置项处理方法
     if (ngx_conf_parse(&conf, &cycle->conf_file) != NGX_CONF_OK) {
         environ = senv;
         ngx_destroy_cycle_pools(&conf);
@@ -292,6 +302,7 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
                        cycle->conf_file.data);
     }
 
+    //调用所有NGX_CORE_MODULE核心模块的init_conf方法
     for (i = 0; cycle->modules[i]; i++) {
         if (cycle->modules[i]->type != NGX_CORE_MODULE) {
             continue;
@@ -361,6 +372,13 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
     /* open the new files */
+
+    /**
+     * 在之前核心模块的init_conf或者create_conf方法中，
+     * 可能已经有些模块（如缓存模 块）在ngx_cycle_t结构体中的pathes动态数组和open_files链表中添加了需要打开的文件或者目录，
+     * 本步骤将会创建不存在的目录，并把相应的文件打开。
+     * 同时，ngx_cycle_t结构体的 shared_memory链表中将会开始初始化用于进程间通信的共享内存
+     */
 
     part = &cycle->open_files.part;
     file = part->elts;
@@ -506,6 +524,11 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
     }
 
 
+    /**
+     * 在解析配置项时，所有的模块都已经解析出自己需要监听的端口，如HTTP模块已经在解析http{...}配置项时得到它要监听的端口，
+     * 并添加到listening数组中了。
+     * 这一步骤就是按照listening数组中的每一个ngx_listening_t元素设置socket句柄并监听端口
+     */
     /* handle the listening sockets */
 
     if (old_cycle->listening.nelts) {
@@ -638,6 +661,9 @@ ngx_init_cycle(ngx_cycle_t *old_cycle)
 
     pool->log = cycle->log;
 
+    /**
+     * 调用所有模块的init_module方法
+     */
     if (ngx_init_modules(cycle) != NGX_OK) {
         /* fatal */
         exit(1);
@@ -772,6 +798,7 @@ old_shm_zone_done:
 
     ngx_destroy_pool(conf.temp_pool);
 
+    //如果nginx.conf中配置为单进程工作模式，这时将会调用ngx_single_process_cycle方法 进入单进程工作模式
     if (ngx_process == NGX_PROCESS_MASTER || ngx_is_init_cycle(old_cycle)) {
 
         ngx_destroy_pool(old_cycle->pool);
@@ -1293,7 +1320,21 @@ ngx_reopen_files(ngx_cycle_t *cycle, ngx_uid_t user)
     (void) ngx_log_redirect_stderr(cycle);
 }
 
-
+/**
+ * 初始化1块大小为size、名称为name的slab共享内存池
+ * 
+ * cf： 配置解析结构体， 通常在配置文件里设置共享内存的大小
+ * name：slab共享内存池的名字
+ * size：共享内存的大小
+ * tag：用于防止两个不相关的Nginx模块所定义的内存池恰好具有同样的名字，从而造成数据错乱
+ *      通常tag参数传入本模块结构体的地址
+ * 
+ * 会比较前一次name对应的共享内存size是否与本次size参数相等，以及tag地址是否相等，
+ * 如果相等，直接返回上一次的共享内存对应的ngx_shm_zone_t，否则会返回NULL
+ * 
+ * 
+ * ngx_shm_zone_t.shm.addr即为内存地址
+ */
 ngx_shm_zone_t *
 ngx_shared_memory_add(ngx_conf_t *cf, ngx_str_t *name, size_t size, void *tag)
 {

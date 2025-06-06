@@ -154,6 +154,13 @@ ngx_conf_add_dump(ngx_conf_t *cf, ngx_str_t *filename)
 }
 
 
+/**
+ * 配置解析，event|http|server|location都调用此方法进行解析
+ * 
+ * 解析event{}配置结构体
+ * 针对所有事件类型的模块解析配置项。每个事件模块定义的ngx_command_t决定了配置项的解析方法，
+ * 如果在nginx.conf中发现相应的配置项，就会回调各事件模块定义的方法。
+ */
 char *
 ngx_conf_parse(ngx_conf_t *cf, ngx_str_t *filename)
 {
@@ -446,6 +453,10 @@ ngx_conf_handler(ngx_conf_t *cf, ngx_int_t last)
 
             conf = NULL;
 
+            //解析标识为NGX_DIRECT_CONF类型的 配置项时，会把void****类型的conf_ctx强制转换为void**，
+            //也就是说，此时，在conf_ctx指向的指针数组中，每个成员指针不再指向其他数组，
+            //直接指向核心模块生成的配置结构体。因此，NGX_DIRECT_CONF仅由NGX_CORE_MODULE类型的核心模块使用，
+            //而且配置项只 应该出现在全局配置中
             if (cmd->type & NGX_DIRECT_CONF) {
                 conf = ((void **) cf->ctx)[cf->cycle->modules[i]->index];
 

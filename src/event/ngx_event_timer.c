@@ -9,8 +9,15 @@
 #include <ngx_core.h>
 #include <ngx_event.h>
 
-
+/**
+ * 所有定时器事件组成的红黑树,红黑树中的每个节点都是ngx_event_t事件中的timer成员
+ * 而ngx_rbtree_node_t节点的 关键字就是事件的超时时间，以这个超时时间的大小组成了二叉排序树
+ * 
+ */
 ngx_rbtree_t              ngx_event_timer_rbtree;
+/**
+ * 这棵红黑树的哨兵节点
+ */
 static ngx_rbtree_node_t  ngx_event_timer_sentinel;
 
 /*
@@ -28,7 +35,10 @@ ngx_event_timer_init(ngx_log_t *log)
     return NGX_OK;
 }
 
-
+/**
+ *  调用一次 ngx_event_expire_timers方法的频率
+ *  返回下一个最近的超时事件多久后会发生
+ */
 ngx_msec_t
 ngx_event_find_timer(void)
 {
@@ -49,7 +59,9 @@ ngx_event_find_timer(void)
     return (ngx_msec_t) (timer > 0 ? timer : 0);
 }
 
-
+/**
+ * 触发所有超时的事件,在这个方法中，循环调用所有满足超时条件的事件的handler回调方法
+ */
 void
 ngx_event_expire_timers(void)
 {

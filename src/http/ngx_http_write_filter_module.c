@@ -9,13 +9,17 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+/**
+ * 该模块负责向客户端发送HTTP响应
+ */
 
 static ngx_int_t ngx_http_write_filter_init(ngx_conf_t *cf);
 
 
 static ngx_http_module_t  ngx_http_write_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
-    ngx_http_write_filter_init,            /* postconfiguration */
+    //安装响应体的最后一个filter。处理响应头最后一个filter最后也调用这里的handler
+    ngx_http_write_filter_init,            /* postconfiguration */  
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -44,6 +48,11 @@ ngx_module_t  ngx_http_write_filter_module = {
 };
 
 
+/**
+ * 将in链表赋值到r->out末尾。
+ * 发送r->out上的buf, 然后更新r->out为第一个待发送的chain
+ * in为本次要发送的数据
+ */
 ngx_int_t
 ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -56,7 +65,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     c = r->connection;
 
-    if (c->error) {
+    if (c->error) {         // 请求出错
         return NGX_ERROR;
     }
 
@@ -68,6 +77,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     /* find the size, the flush point and the last link of the saved chain */
 
+    //遍历r->out, 直到最后一个节点。计算out缓冲区数据大小
     for (cl = r->out; cl; cl = cl->next) {
         ll = &cl->next;
 
@@ -80,6 +90,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
                        cl->buf->file_pos,
                        cl->buf->file_last - cl->buf->file_pos);
 
+        //buf为空，却不是控制buf    
         if (ngx_buf_size(cl->buf) == 0 && !ngx_buf_special(cl->buf)) {
             ngx_log_error(NGX_LOG_ALERT, c->log, 0,
                           "zero size buf in writer "
@@ -98,7 +109,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
             return NGX_ERROR;
         }
 
-        if (ngx_buf_size(cl->buf) < 0) {
+        if (ngx_buf_size(cl->buf) < 0) {        //size<0, 非法的size
             ngx_log_error(NGX_LOG_ALERT, c->log, 0,
                           "negative size buf in writer "
                           "t:%d r:%d f:%d %p %p-%p %p %O-%O",
@@ -116,23 +127,23 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
             return NGX_ERROR;
         }
 
-        size += ngx_buf_size(cl->buf);
+        size += ngx_buf_size(cl->buf);  //size记录了所有buf有效数据长度
 
-        if (cl->buf->flush || cl->buf->recycled) {
+        if (cl->buf->flush || cl->buf->recycled) {  //有flush节点
             flush = 1;
         }
 
-        if (cl->buf->sync) {
+        if (cl->buf->sync) {    //有sync节点
             sync = 1;
         }
 
-        if (cl->buf->last_buf) {
+        if (cl->buf->last_buf) {    //响应中的最后一个buf
             last = 1;
         }
     }
 
     /* add the new chain to the existent one */
-
+    //遍历in链表，将其buf复制in到out链表
     for (ln = in; ln; ln = ln->next) {
         cl = ngx_alloc_chain_link(r->pool);
         if (cl == NULL) {
@@ -188,7 +199,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
             return NGX_ERROR;
         }
 
-        size += ngx_buf_size(cl->buf);
+        size += ngx_buf_size(cl->buf);  //更新size
 
         if (cl->buf->flush || cl->buf->recycled) {
             flush = 1;
@@ -216,11 +227,14 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
      * is smaller than "postpone_output" directive
      */
 
+     //如果len小于postpone_output,并且没有flush和last, 直接返回
+     //https://nginx.org/en/docs/http/ngx_http_core_module.html#postpone_output 默认1460
+     //the size of all bufs is smaller than "postpone_output" directive
     if (!last && !flush && in && size < (off_t) clcf->postpone_output) {
         return NGX_OK;
     }
 
-    if (c->write->delayed) {
+    if (c->write->delayed) {    //delay表示响应需要延长发送
         c->buffered |= NGX_HTTP_WRITE_BUFFERED;
         return NGX_AGAIN;
     }
@@ -234,7 +248,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
             for (cl = r->out; cl; /* void */) {
                 ln = cl;
                 cl = cl->next;
-                ngx_free_chain(r->pool, ln);
+                ngx_free_chain(r->pool, ln);    //size==0说明r->out 都没数据了,可以回收掉了
             }
 
             r->out = NULL;
@@ -255,7 +269,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
         return NGX_ERROR;
     }
 
-    if (!r->limit_rate_set) {
+    if (!r->limit_rate_set) {       //计算限速
         r->limit_rate = ngx_http_complex_value_size(r, clcf->limit_rate, 0);
         r->limit_rate_set = 1;
     }
@@ -296,7 +310,7 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http write filter limit %O", limit);
 
-    chain = c->send_chain(c, r->out, limit);
+    chain = c->send_chain(c, r->out, limit);        //将r->out中的数据输出， ngx_writev_chain
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http write filter %p", chain);
@@ -335,13 +349,14 @@ ngx_http_write_filter(ngx_http_request_t *r, ngx_chain_t *in)
         ngx_post_event(c->write, &ngx_posted_next_events);
     }
 
+    //chain之前的buf已经消费掉了，可以清理了
     for (cl = r->out; cl && cl != chain; /* void */) {
         ln = cl;
         cl = cl->next;
         ngx_free_chain(r->pool, ln);
     }
 
-    r->out = chain;
+    r->out = chain;     //r->out指向待发送的chain
 
     if (chain) {
         c->buffered |= NGX_HTTP_WRITE_BUFFERED;

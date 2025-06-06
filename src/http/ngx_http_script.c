@@ -54,6 +54,15 @@ ngx_http_script_flush_complex_value(ngx_http_request_t *r,
 }
 
 
+/**
+ * 解析复杂变量值
+ *   r: 当前请求
+ *   val: 需要解析的复杂值表达式
+ *   value: 存储解析后的结果值（输出参数）
+ * 返回值：
+ *   NGX_OK：解析成功，结果存储在 value 中。
+ *   NGX_ERROR：解析失败。
+ */
 ngx_int_t
 ngx_http_complex_value(ngx_http_request_t *r, ngx_http_complex_value_t *val,
     ngx_str_t *value)
@@ -238,7 +247,9 @@ ngx_http_compile_complex_value(ngx_http_compile_complex_value_t *ccv)
     return NGX_OK;
 }
 
-
+/**
+ * 脚本变量的设置方法
+ */
 char *
 ngx_http_set_complex_value_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -441,6 +452,9 @@ ngx_http_set_predicate_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 计算value中$字符的个数
+ */
 ngx_uint_t
 ngx_http_script_variables_count(ngx_str_t *value)
 {
@@ -456,6 +470,9 @@ ngx_http_script_variables_count(ngx_str_t *value)
 }
 
 
+/**
+ * 编译复杂变量
+ */
 ngx_int_t
 ngx_http_script_compile(ngx_http_script_compile_t *sc)
 {

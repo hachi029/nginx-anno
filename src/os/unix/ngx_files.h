@@ -62,6 +62,9 @@ typedef struct {
 
 #else
 
+/**
+ * 返回的是Linux系统的文件句柄
+ */
 #define ngx_open_file(name, mode, create, access)                            \
     open((const char *) name, mode|create, access)
 

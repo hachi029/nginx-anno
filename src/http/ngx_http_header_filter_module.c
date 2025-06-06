@@ -10,6 +10,10 @@
 #include <ngx_http.h>
 #include <nginx.h>
 
+/**
+ * https://tengine.taobao.org/book/chapter_04.html
+ * 最后一个处理响应头的过滤模块，负责构建响应行和响应头，并调用 ngx_http_write_filter删除输出
+ */
 
 static ngx_int_t ngx_http_header_filter_init(ngx_conf_t *cf);
 static ngx_int_t ngx_http_header_filter(ngx_http_request_t *r);
@@ -17,7 +21,7 @@ static ngx_int_t ngx_http_header_filter(ngx_http_request_t *r);
 
 static ngx_http_module_t  ngx_http_header_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
-    ngx_http_header_filter_init,           /* postconfiguration */
+    ngx_http_header_filter_init,           /* postconfiguration */   //安装响应头的最后一个filter。
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -152,7 +156,11 @@ ngx_http_header_out_t  ngx_http_headers_out[] = {
     { ngx_null_string, 0 }
 };
 
-
+/**
+ * 作为header_filter 的最后一个filter
+ * 核心方法，整体逻辑为先计算响应行、响应头的长度，再构建响应行、响应头的内容，最后调用ngx_http_write_filter输出
+ * 最后构建的是一个完成的buf,挂到ngx_chain_t out上
+ */
 static ngx_int_t
 ngx_http_header_filter(ngx_http_request_t *r)
 {
@@ -169,25 +177,25 @@ ngx_http_header_filter(ngx_http_request_t *r)
     ngx_http_core_srv_conf_t  *cscf;
     u_char                     addr[NGX_SOCKADDR_STRLEN];
 
-    if (r->header_sent) {
+    if (r->header_sent) {       //如果已经发送了响应头
         return NGX_OK;
     }
 
-    r->header_sent = 1;
+    r->header_sent = 1;         //标记已经发送了响应头
 
-    if (r != r->main) {
+    if (r != r->main) {         //如果不是主请求
         return NGX_OK;
     }
 
-    if (r->http_version < NGX_HTTP_VERSION_10) {
+    if (r->http_version < NGX_HTTP_VERSION_10) {    //如果http版本小于1.0，不发送响应头
         return NGX_OK;
     }
 
-    if (r->method == NGX_HTTP_HEAD) {
+    if (r->method == NGX_HTTP_HEAD) {       //如果是HEAD方法
         r->header_only = 1;
     }
 
-    if (r->headers_out.last_modified_time != -1) {
+    if (r->headers_out.last_modified_time != -1) {      //处理last_modified响应头
         if (r->headers_out.status != NGX_HTTP_OK
             && r->headers_out.status != NGX_HTTP_PARTIAL_CONTENT
             && r->headers_out.status != NGX_HTTP_NOT_MODIFIED)
@@ -197,14 +205,16 @@ ngx_http_header_filter(ngx_http_request_t *r)
         }
     }
 
-    if (r->keepalive && (ngx_terminate || ngx_exiting)) {
+    if (r->keepalive && (ngx_terminate || ngx_exiting)) {   //如果进程即将退出，修改keepalive为0
         r->keepalive = 0;
     }
 
-    len = sizeof("HTTP/1.x ") - 1 + sizeof(CRLF) - 1
+    //len为请求行的长度
+    len = sizeof("HTTP/1.x ") - 1 + sizeof(CRLF) - 1        //http版本和CRLF
           /* the end of the header */
           + sizeof(CRLF) - 1;
 
+    //以下主要是根据status计算status_line的长度, 包括一个状态码和状态码代表的字符串
     /* status line */
 
     if (r->headers_out.status_line.len) {
@@ -218,14 +228,14 @@ ngx_http_header_filter(ngx_http_request_t *r)
 
         status = r->headers_out.status;
 
-        if (status >= NGX_HTTP_OK
+        if (status >= NGX_HTTP_OK                       //200到207
             && status < NGX_HTTP_LAST_2XX)
         {
             /* 2XX */
 
-            if (status == NGX_HTTP_NO_CONTENT) {
+            if (status == NGX_HTTP_NO_CONTENT) {        //204, 不需要返回内容
                 r->header_only = 1;
-                ngx_str_null(&r->headers_out.content_type);
+                ngx_str_null(&r->headers_out.content_type); //清空content_type、last_modified、content_length
                 r->headers_out.last_modified_time = -1;
                 r->headers_out.last_modified = NULL;
                 r->headers_out.content_length = NULL;
@@ -236,12 +246,12 @@ ngx_http_header_filter(ngx_http_request_t *r)
             status_line = &ngx_http_status_lines[status];
             len += ngx_http_status_lines[status].len;
 
-        } else if (status >= NGX_HTTP_MOVED_PERMANENTLY
+        } else if (status >= NGX_HTTP_MOVED_PERMANENTLY    //301到308
                    && status < NGX_HTTP_LAST_3XX)
         {
             /* 3XX */
 
-            if (status == NGX_HTTP_NOT_MODIFIED) {
+            if (status == NGX_HTTP_NOT_MODIFIED) {          //304
                 r->header_only = 1;
             }
 
@@ -249,7 +259,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
             status_line = &ngx_http_status_lines[status];
             len += ngx_http_status_lines[status].len;
 
-        } else if (status >= NGX_HTTP_BAD_REQUEST
+        } else if (status >= NGX_HTTP_BAD_REQUEST           //400到429
                    && status < NGX_HTTP_LAST_4XX)
         {
             /* 4XX */
@@ -259,7 +269,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
             status_line = &ngx_http_status_lines[status];
             len += ngx_http_status_lines[status].len;
 
-        } else if (status >= NGX_HTTP_INTERNAL_SERVER_ERROR
+        } else if (status >= NGX_HTTP_INTERNAL_SERVER_ERROR   //500到508
                    && status < NGX_HTTP_LAST_5XX)
         {
             /* 5XX */
@@ -269,7 +279,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
             status_line = &ngx_http_status_lines[status];
             len += ngx_http_status_lines[status].len;
 
-        } else {
+        } else {                                             //其他的状态码          
             len += NGX_INT_T_LEN + 1 /* SP */;
             status_line = NULL;
         }
@@ -283,40 +293,40 @@ ngx_http_header_filter(ngx_http_request_t *r)
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-    if (r->headers_out.server == NULL) {
-        if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
-            len += sizeof(ngx_http_server_full_string) - 1;
+    if (r->headers_out.server == NULL) {                //如果没有server响应头
+        if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {     //如果配置了server_tokens
+            len += sizeof(ngx_http_server_full_string) - 1; // 发送 SERVER+VERSION
 
-        } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {
-            len += sizeof(ngx_http_server_build_string) - 1;
+        } else if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_BUILD) {   //如果配置了server_tokens_build
+            len += sizeof(ngx_http_server_build_string) - 1;        //发送带BUILD的server响应头
 
-        } else {
+        } else {        //只发送 nginx
             len += sizeof(ngx_http_server_string) - 1;
         }
     }
 
-    if (r->headers_out.date == NULL) {
+    if (r->headers_out.date == NULL) {  //如果没有date响应头
         len += sizeof("Date: Mon, 28 Sep 1970 06:00:00 GMT" CRLF) - 1;
     }
 
-    if (r->headers_out.content_type.len) {
+    if (r->headers_out.content_type.len) {  //如果有content_type响应头
         len += sizeof("Content-Type: ") - 1
                + r->headers_out.content_type.len + 2;
 
-        if (r->headers_out.content_type_len == r->headers_out.content_type.len
+        if (r->headers_out.content_type_len == r->headers_out.content_type.len  //增加charset
             && r->headers_out.charset.len)
         {
             len += sizeof("; charset=") - 1 + r->headers_out.charset.len;
         }
     }
 
-    if (r->headers_out.content_length == NULL
+    if (r->headers_out.content_length == NULL       //如果没有content_length响应头
         && r->headers_out.content_length_n >= 0)
     {
         len += sizeof("Content-Length: ") - 1 + NGX_OFF_T_LEN + 2;
     }
 
-    if (r->headers_out.last_modified == NULL
+    if (r->headers_out.last_modified == NULL        //last_modified响应头
         && r->headers_out.last_modified_time != -1)
     {
         len += sizeof("Last-Modified: Mon, 28 Sep 1970 06:00:00 GMT" CRLF) - 1;
@@ -324,7 +334,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
 
     c = r->connection;
 
-    if (r->headers_out.location
+    if (r->headers_out.location     //如果有location响应头,并且是绝对路径重定向
         && r->headers_out.location->value.len
         && r->headers_out.location->value.data[0] == '/'
         && clcf->absolute_redirect)
@@ -375,14 +385,14 @@ ngx_http_header_filter(ngx_http_request_t *r)
         port = 0;
     }
 
-    if (r->chunked) {
+    if (r->chunked) {       //如果是分块传输
         len += sizeof("Transfer-Encoding: chunked" CRLF) - 1;
     }
 
-    if (r->headers_out.status == NGX_HTTP_SWITCHING_PROTOCOLS) {
+    if (r->headers_out.status == NGX_HTTP_SWITCHING_PROTOCOLS) {        //如果是101状态码
         len += sizeof("Connection: upgrade" CRLF) - 1;
 
-    } else if (r->keepalive) {
+    } else if (r->keepalive) {      //如果需要保持长连接
         len += sizeof("Connection: keep-alive" CRLF) - 1;
 
         /*
@@ -393,15 +403,15 @@ ngx_http_header_filter(ngx_http_request_t *r)
          * Konqueror keeps the connection alive for about N seconds.
          */
 
-        if (clcf->keepalive_header) {
+        if (clcf->keepalive_header) {       //如果配置了keepalive_header
             len += sizeof("Keep-Alive: timeout=") - 1 + NGX_TIME_T_LEN + 2;
         }
 
     } else {
-        len += sizeof("Connection: close" CRLF) - 1;
+        len += sizeof("Connection: close" CRLF) - 1;        //如果不需要保持长连接
     }
 
-#if (NGX_HTTP_GZIP)
+#if (NGX_HTTP_GZIP)     //如果配置了gzip
     if (r->gzip_vary) {
         if (clcf->gzip_vary) {
             len += sizeof("Vary: Accept-Encoding" CRLF) - 1;
@@ -415,7 +425,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
     part = &r->headers_out.headers.part;
     header = part->elts;
 
-    for (i = 0; /* void */; i++) {
+    for (i = 0; /* void */; i++) {      //遍历所有响应头
 
         if (i >= part->nelts) {
             if (part->next == NULL) {
@@ -427,7 +437,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
             i = 0;
         }
 
-        if (header[i].hash == 0) {
+        if (header[i].hash == 0) {      //如果hash为0，表示不需要发送
             continue;
         }
 
@@ -435,7 +445,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
                + sizeof(CRLF) - 1;
     }
 
-    b = ngx_create_temp_buf(r->pool, len);
+    b = ngx_create_temp_buf(r->pool, len);      //len为响应行+响应头的长度
     if (b == NULL) {
         return NGX_ERROR;
     }
@@ -444,15 +454,15 @@ ngx_http_header_filter(ngx_http_request_t *r)
     b->last = ngx_cpymem(b->last, "HTTP/1.1 ", sizeof("HTTP/1.x ") - 1);
 
     /* status line */
-    if (status_line) {
+    if (status_line) {      //如果status_line不为空, 直接拷贝status_line
         b->last = ngx_copy(b->last, status_line->data, status_line->len);
 
-    } else {
+    } else {            //如果status_line为空，只输出status
         b->last = ngx_sprintf(b->last, "%03ui ", status);
     }
-    *b->last++ = CR; *b->last++ = LF;
+    *b->last++ = CR; *b->last++ = LF;       //CRLF
 
-    if (r->headers_out.server == NULL) {
+    if (r->headers_out.server == NULL) {    //Server响应头
         if (clcf->server_tokens == NGX_HTTP_SERVER_TOKENS_ON) {
             p = ngx_http_server_full_string;
             len = sizeof(ngx_http_server_full_string) - 1;
@@ -469,7 +479,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
         b->last = ngx_cpymem(b->last, p, len);
     }
 
-    if (r->headers_out.date == NULL) {
+    if (r->headers_out.date == NULL) {      //Date响应头
         b->last = ngx_cpymem(b->last, "Date: ", sizeof("Date: ") - 1);
         b->last = ngx_cpymem(b->last, ngx_cached_http_time.data,
                              ngx_cached_http_time.len);
@@ -477,7 +487,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
         *b->last++ = CR; *b->last++ = LF;
     }
 
-    if (r->headers_out.content_type.len) {
+    if (r->headers_out.content_type.len) {      //Content-Type响应头
         b->last = ngx_cpymem(b->last, "Content-Type: ",
                              sizeof("Content-Type: ") - 1);
         p = b->last;
@@ -501,14 +511,14 @@ ngx_http_header_filter(ngx_http_request_t *r)
         *b->last++ = CR; *b->last++ = LF;
     }
 
-    if (r->headers_out.content_length == NULL
+    if (r->headers_out.content_length == NULL       //Content-Length响应头
         && r->headers_out.content_length_n >= 0)
     {
         b->last = ngx_sprintf(b->last, "Content-Length: %O" CRLF,
                               r->headers_out.content_length_n);
     }
 
-    if (r->headers_out.last_modified == NULL
+    if (r->headers_out.last_modified == NULL            //Last-Modified响应头
         && r->headers_out.last_modified_time != -1)
     {
         b->last = ngx_cpymem(b->last, "Last-Modified: ",
@@ -518,7 +528,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
         *b->last++ = CR; *b->last++ = LF;
     }
 
-    if (host.data) {
+    if (host.data) {        //Location响应头
 
         p = b->last + sizeof("Location: ") - 1;
 
@@ -550,16 +560,16 @@ ngx_http_header_filter(ngx_http_request_t *r)
         *b->last++ = CR; *b->last++ = LF;
     }
 
-    if (r->chunked) {
+    if (r->chunked) {       //chunked传输的响应头
         b->last = ngx_cpymem(b->last, "Transfer-Encoding: chunked" CRLF,
                              sizeof("Transfer-Encoding: chunked" CRLF) - 1);
     }
 
-    if (r->headers_out.status == NGX_HTTP_SWITCHING_PROTOCOLS) {
+    if (r->headers_out.status == NGX_HTTP_SWITCHING_PROTOCOLS) {    //101响应码的Connection: upgrade
         b->last = ngx_cpymem(b->last, "Connection: upgrade" CRLF,
                              sizeof("Connection: upgrade" CRLF) - 1);
 
-    } else if (r->keepalive) {
+    } else if (r->keepalive) {  //长连接 Connection响应头
         b->last = ngx_cpymem(b->last, "Connection: keep-alive" CRLF,
                              sizeof("Connection: keep-alive" CRLF) - 1);
 
@@ -574,7 +584,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
     }
 
 #if (NGX_HTTP_GZIP)
-    if (r->gzip_vary) {
+    if (r->gzip_vary) {     //如果配置了gzip, Vary响应头
         b->last = ngx_cpymem(b->last, "Vary: Accept-Encoding" CRLF,
                              sizeof("Vary: Accept-Encoding" CRLF) - 1);
     }
@@ -583,7 +593,7 @@ ngx_http_header_filter(ngx_http_request_t *r)
     part = &r->headers_out.headers.part;
     header = part->elts;
 
-    for (i = 0; /* void */; i++) {
+    for (i = 0; /* void */; i++) {      //输出所有的其他响应头
 
         if (i >= part->nelts) {
             if (part->next == NULL) {
@@ -614,21 +624,21 @@ ngx_http_header_filter(ngx_http_request_t *r)
 
     r->header_size = b->last - b->pos;
 
-    if (r->header_only) {
+    if (r->header_only) {       //如果只需要响应头，设置last_buf表示
         b->last_buf = 1;
     }
 
     out.buf = b;
     out.next = NULL;
-
-    return ngx_http_write_filter(r, &out);
+    //out在ngx_http_write_filter里会被复制
+    return ngx_http_write_filter(r, &out);      //输出响应头
 }
 
 
 static ngx_int_t
 ngx_http_header_filter_init(ngx_conf_t *cf)
 {
-    ngx_http_top_header_filter = ngx_http_header_filter;
+    ngx_http_top_header_filter = ngx_http_header_filter;  //设置ngx_http_header_filter为最后一个处理响应头的过滤模块
 
     return NGX_OK;
 }
