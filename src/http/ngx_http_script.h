@@ -14,8 +14,14 @@
 #include <ngx_http.h>
 
 
+/**
+ * 同一段脚本被编译进Nginx中，在不同的请求里执行时效果是完全不同的，
+ * 所以，每一个请求都必须有其独有的脚本执行上下文，或者称为脚本引擎，这是最关键的数据结构
+ */
 typedef struct {
+    // 指向待执行的脚本指令
     u_char                     *ip;
+    // 变量值构成的栈
     u_char                     *pos;
     ngx_http_variable_value_t  *sp;
 
@@ -31,20 +37,25 @@ typedef struct {
     unsigned                    is_args:1;
     unsigned                    log:1;
 
+    // 脚本引擎执行状态
     ngx_int_t                   status;
+    // 指向当前脚本引擎所属的HTTP请求
     ngx_http_request_t         *request;
 } ngx_http_script_engine_t;
 
 
+/**
+ * 编译复杂变量时，需传入此结构体
+ */
 typedef struct {
     ngx_conf_t                 *cf;
-    ngx_str_t                  *source;
+    ngx_str_t                  *source;     //复杂变量的原始值
 
     ngx_array_t               **flushes;
     ngx_array_t               **lengths;
     ngx_array_t               **values;
 
-    ngx_uint_t                  variables;
+    ngx_uint_t                  variables;      //包含变量的个数，即$字符的个数
     ngx_uint_t                  ncaptures;
     ngx_uint_t                  captures_mask;
     ngx_uint_t                  size;
@@ -63,8 +74,12 @@ typedef struct {
 } ngx_http_script_compile_t;
 
 
+/**
+ * 表示一个复杂变量（脚本），含有多个'$'的字符串
+ * 需要在运行时计算
+ */
 typedef struct {
-    ngx_str_t                   value;
+    ngx_str_t                   value;      //解析出来的变量值，
     ngx_uint_t                 *flushes;
     void                       *lengths;
     void                       *values;
@@ -75,10 +90,15 @@ typedef struct {
 } ngx_http_complex_value_t;
 
 
+/**
+ * 对字符串进行“编译”，之后才能正确得到变量值。
+ * 
+ * 因此需要通过这个结构体，才能获取到ngx_http_complex_value_t
+ */ 
 typedef struct {
-    ngx_conf_t                 *cf;
-    ngx_str_t                  *value;
-    ngx_http_complex_value_t   *complex_value;
+    ngx_conf_t                 *cf;     // nginx的配置结构体指针
+    ngx_str_t                  *value;  // 配置文件里的原始字符串
+    ngx_http_complex_value_t   *complex_value;  // 编译后的输出结果，即复杂变量
 
     unsigned                    zero:1;
     unsigned                    conf_prefix:1;
@@ -118,12 +138,12 @@ typedef struct {
 #if (NGX_PCRE)
 
 typedef struct {
-    ngx_http_script_code_pt     code;
-    ngx_http_regex_t           *regex;
+    ngx_http_script_code_pt     code;       //指令执行函数
+    ngx_http_regex_t           *regex;      //编译好的正则表达式
     ngx_array_t                *lengths;
     uintptr_t                   size;
-    uintptr_t                   status;
-    uintptr_t                   next;
+    uintptr_t                   status;     //客户端响应状态码
+    uintptr_t                   next;       //下一跳指令
 
     unsigned                    test:1;
     unsigned                    negative_test:1;
@@ -131,10 +151,10 @@ typedef struct {
     unsigned                    args:1;
 
     /* add the r->args to the new arguments */
-    unsigned                    add_args:1;
+    unsigned                    add_args:1;         //标识要添加args参数
 
-    unsigned                    redirect:1;
-    unsigned                    break_cycle:1;
+    unsigned                    redirect:1;         //标识客户端重定向 redirect
+    unsigned                    break_cycle:1;      //标识break
 
     ngx_str_t                   name;
 } ngx_http_script_regex_code_t;
@@ -161,10 +181,13 @@ typedef struct {
 } ngx_http_script_full_name_code_t;
 
 
+/**
+ * return 指令
+ */
 typedef struct {
-    ngx_http_script_code_pt     code;
-    uintptr_t                   status;
-    ngx_http_complex_value_t    text;
+    ngx_http_script_code_pt     code;       //执行函数 ngx_http_script_return_code
+    uintptr_t                   status;     //返回状态码
+    ngx_http_complex_value_t    text;       //返回文本，可以包含变量
 } ngx_http_script_return_code_t;
 
 

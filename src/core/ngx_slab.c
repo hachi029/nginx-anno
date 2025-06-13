@@ -8,11 +8,30 @@
 #include <ngx_core.h>
 
 
+// 内存页的标记，即二进制11
+// 在指针的后两位
 #define NGX_SLAB_PAGE_MASK   3
+// 整页分配，0,即memzero
+// x >=ngx_slab_max_size
+// ngx_slab_max_size = 4k/2 = 2k
 #define NGX_SLAB_PAGE        0
+
+// 较大数据
+// ngx_slab_exact_size< x <ngx_slab_max_size
+// 中等大小，64位系统是64
 #define NGX_SLAB_BIG         1
+
+// 中等大小的数据
+// x = ngx_slab_exact_size
+// 精确的大小，64位系统是64
 #define NGX_SLAB_EXACT       2
+
+// 小块的数据
+// x < ngx_slab_exact_size
+// 中等大小，64位系统是64
 #define NGX_SLAB_SMALL       3
+
+// 32位用掩码
 
 #if (NGX_PTR_SIZE == 4)
 
@@ -26,6 +45,7 @@
 
 #define NGX_SLAB_BUSY        0xffffffff
 
+// 64位用掩码
 #else /* (NGX_PTR_SIZE == 8) */
 
 #define NGX_SLAB_PAGE_FREE   0
@@ -41,19 +61,31 @@
 #endif
 
 
+// 跳过内存前面的管理结构，得到可用内存位置
+// 64位系统上跳过200个字节
+// 存放slots数组，管理8/16/32/64等字节管理页
 #define ngx_slab_slots(pool)                                                  \
     (ngx_slab_page_t *) ((u_char *) (pool) + sizeof(ngx_slab_pool_t))
 
+// 检查内存页的类型
+// 取指针末两位
 #define ngx_slab_page_type(page)   ((page)->prev & NGX_SLAB_PAGE_MASK)
 
+// 去掉末两位，得到实际的指针
 #define ngx_slab_page_prev(page)                                              \
     (ngx_slab_page_t *) ((page)->prev & ~NGX_SLAB_PAGE_MASK)
 
+// 减去数组首地址，得到数组的下标序号,即偏移
+// 因为一个元素代表4k的页面，所以左移4k
+// 再加上起始地址，就是空闲页面的内存地址
+// 例如序号2，就是第三个页，偏移2*4k，从start+8k开始
 #define ngx_slab_page_addr(pool, page)                                        \
     ((((page) - (pool)->pages) << ngx_pagesize_shift)                         \
      + (uintptr_t) (pool)->start)
 
 
+// 调试用宏，内存放入垃圾数据
+// 正式环境不会起作用
 #if (NGX_DEBUG_MALLOC)
 
 #define ngx_slab_junk(p, size)     ngx_memset(p, 0xA5, size)
@@ -69,32 +101,62 @@
 
 #endif
 
+// 分配多个内存页
 static ngx_slab_page_t *ngx_slab_alloc_pages(ngx_slab_pool_t *pool,
     ngx_uint_t pages);
+
+// 释放多个内存页，自1.7.x支持合并
 static void ngx_slab_free_pages(ngx_slab_pool_t *pool, ngx_slab_page_t *page,
     ngx_uint_t pages);
+
+// 简单地记录日志
 static void ngx_slab_error(ngx_slab_pool_t *pool, ngx_uint_t level,
     char *text);
 
 
+// 最大slab，是page的一半，通常是2k
+// 超过此大小则直接分配整页
 static ngx_uint_t  ngx_slab_max_size;
+
+// 中等大小，64位系统是64
+// 1个指针大小的位图能够管理的大小
+// '8'是一个字节里的位数
+// 8 * sizeof(uintptr_t)即一个指针的总位数
+// 所以一个uintptr_t用位图就可以管理一个页
 static ngx_uint_t  ngx_slab_exact_size;
+
+// exact的位移，即6
 static ngx_uint_t  ngx_slab_exact_shift;
 
 
+// 1.14.0新增
+// 初始化上面的三个数字
+// 在main里调用
 void
 ngx_slab_sizes_init(void)
 {
     ngx_uint_t  n;
 
+    // 最大slab，是page的一半
+    // 超过此大小则直接分配整页
+    // ngx_pagesize是4k
     ngx_slab_max_size = ngx_pagesize / 2;
+    // 中等大小，64位系统是64
+    // 1个指针大小的位图能够管理的大小
+    // '8'是一个字节里的位数
+    // 8 * sizeof(uintptr_t)即一个指针的总位数
+    // 所以一个uintptr_t用位图就可以管理一个页
+    // 4k/8*8 = 64
+    // 如果增大pagesize，8k的话就是128字节，16k就是256字节
     ngx_slab_exact_size = ngx_pagesize / (8 * sizeof(uintptr_t));
+    // 计算exact的位移，即64=2^6,exact_shift=6
+    // 如果增大pagesize，8k的话就是7，16k就是8
     for (n = ngx_slab_exact_size; n >>= 1; ngx_slab_exact_shift++) {
         /* void */
     }
 }
 
-
+// 初始化新创建的共享内存, 由 Nginx框架自动调用，使用slab内存池时不需要关注它
 void
 ngx_slab_init(ngx_slab_pool_t *pool)
 {
@@ -104,15 +166,30 @@ ngx_slab_init(ngx_slab_pool_t *pool)
     ngx_uint_t        i, n, pages;
     ngx_slab_page_t  *slots, *page;
 
+    // 左移得到最小大小，1<<3=8
+    // ngx_init_zone_pool里设置
     pool->min_size = (size_t) 1 << pool->min_shift;
 
+    // 跳过内存前面的管理结构，得到可用内存位置
+    // 64位系统上跳过200个字节
+    // 存放slots数组，管理8/16/32/64等字节管理页
     slots = ngx_slab_slots(pool);
 
+    // slots数组地址，也是最初的可用内存位置
     p = (u_char *) slots;
+
+    // 得到可用内存数量
     size = pool->end - p;
 
+    // 调试用宏，内存放入垃圾数据
+    // 正式环境不会起作用
     ngx_slab_junk(p, size);
 
+    // ngx_os_init里初始化
+    // page左移数,4k即2^12,值12
+    // 12-3=9
+    // 即8-4k之间的幂数量
+    // 得到slots数组数量，管理不同的小块
     n = ngx_pagesize_shift - pool->min_shift;
 
     for (i = 0; i < n; i++) {
@@ -165,6 +242,11 @@ ngx_slab_init(ngx_slab_pool_t *pool)
 }
 
 
+/**
+ * 加锁保护的内存分配方法
+ * size就是需要分配的内存大小，
+ * 返回值就是内存块的首地址
+ */
 void *
 ngx_slab_alloc(ngx_slab_pool_t *pool, size_t size)
 {
@@ -180,6 +262,8 @@ ngx_slab_alloc(ngx_slab_pool_t *pool, size_t size)
 }
 
 
+// 不加锁保护的内存分配方法
+// 超过2k则直接分配整页
 void *
 ngx_slab_alloc_locked(ngx_slab_pool_t *pool, size_t size)
 {
@@ -417,6 +501,7 @@ done:
 }
 
 
+// 加锁分配内存并清空
 void *
 ngx_slab_calloc(ngx_slab_pool_t *pool, size_t size)
 {
@@ -432,6 +517,7 @@ ngx_slab_calloc(ngx_slab_pool_t *pool, size_t size)
 }
 
 
+// 不加锁分配内存并清空
 void *
 ngx_slab_calloc_locked(ngx_slab_pool_t *pool, size_t size)
 {
@@ -446,6 +532,10 @@ ngx_slab_calloc_locked(ngx_slab_pool_t *pool, size_t size)
 }
 
 
+/**
+ *  加锁保护的内存释
+ *  p就是ngx_slab_alloc返回的内存地址
+ */ 
 void
 ngx_slab_free(ngx_slab_pool_t *pool, void *p)
 {
@@ -457,6 +547,7 @@ ngx_slab_free(ngx_slab_pool_t *pool, void *p)
 }
 
 
+// 不加锁保护的内存释放方法
 void
 ngx_slab_free_locked(ngx_slab_pool_t *pool, void *p)
 {
@@ -674,6 +765,9 @@ fail:
 }
 
 
+// 分配多个内存页
+// 调整指针，从空闲链表里摘掉
+// 注意返回的是page数组地址，不是真正的内存地址
 static ngx_slab_page_t *
 ngx_slab_alloc_pages(ngx_slab_pool_t *pool, ngx_uint_t pages)
 {
@@ -730,6 +824,7 @@ ngx_slab_alloc_pages(ngx_slab_pool_t *pool, ngx_uint_t pages)
 }
 
 
+// 释放多个内存页，自1.7.x支持合并
 static void
 ngx_slab_free_pages(ngx_slab_pool_t *pool, ngx_slab_page_t *page,
     ngx_uint_t pages)
@@ -810,6 +905,7 @@ ngx_slab_free_pages(ngx_slab_pool_t *pool, ngx_slab_page_t *page,
 }
 
 
+// 简单地记录日志
 static void
 ngx_slab_error(ngx_slab_pool_t *pool, ngx_uint_t level, char *text)
 {

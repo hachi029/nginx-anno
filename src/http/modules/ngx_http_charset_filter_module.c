@@ -20,6 +20,14 @@
 #define NGX_HTML_ENTITY_LEN     (sizeof("&#1114111;") - 1)
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_charset_module.html
+ * 
+ * 响应头Content-Type里添加charset。也可以做编码转换
+ * 
+ * header_filter和body_filter
+ * 
+ */
 typedef struct {
     u_char                    **tables;
     ngx_str_t                   name;
@@ -180,6 +188,7 @@ static ngx_command_t  ngx_http_charset_filter_commands[] = {
 
 static ngx_http_module_t  ngx_http_charset_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //安装filter: header_filter和body_filter
     ngx_http_charset_postconfiguration,    /* postconfiguration */
 
     ngx_http_charset_create_main_conf,     /* create main configuration */

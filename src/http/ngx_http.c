@@ -71,21 +71,44 @@ static ngx_int_t ngx_http_add_addrs6(ngx_conf_t *cf, ngx_http_port_t *hport,
 ngx_uint_t   ngx_http_max_module;
 
 
-ngx_http_output_header_filter_pt  ngx_http_top_header_filter;
-ngx_http_output_body_filter_pt    ngx_http_top_body_filter;
+/**
+ * 使用方法
+ * ngx_http_next_header_filter = ngx_http_top_header_filter; 
+ * ngx_http_top_header_filter = ngx_http_myfilter_header_filter; 
+ * ngx_http_next_body_filter = ngx_http_top_body_filter; 
+ * ngx_http_top_body_filter = ngx_http_myfilter_body_filter;
+ *
+ */
+
+// 过滤链表头指针，过滤header
+// 每个过滤模块都需要内部实现一个函数指针，链接为单向链表
+// 在modules数组里位置在前的是链表末尾，后面的是链表前面
+// 链表的最后一个模块是ngx_http_header_filter_module
+ngx_http_output_header_filter_pt  ngx_http_top_header_filter;   //ngx_http_header_filter, 最后调用的也是ngx_http_write_filter
+
+// 过滤链表头指针，过滤body
+// 每个过滤模块都需要内部实现一个函数指针，链接为单向链表
+// 在modules数组里位置在前的是链表末尾，后面的是链表前面
+// 链表的最后一个模块是ngx_http_write_filter_module
+ngx_http_output_body_filter_pt    ngx_http_top_body_filter;     // ngx_http_write_filter
+
+// 过滤链表头指针，过滤请求body，1.8.x新增，通常只有一个
+//ngx_http_request_body_save_filter
 ngx_http_request_body_filter_pt   ngx_http_top_request_body_filter;
 
-
+// http请求的默认类型，数组最后用空字符串表示结束
 ngx_str_t  ngx_http_html_default_types[] = {
     ngx_string("text/html"),
     ngx_null_string
 };
 
-
+//http模块也只有一个指令，定义http{}配置块
 static ngx_command_t  ngx_http_commands[] = {
 
     { ngx_string("http"),
+      // 出现在main域，配置块，无参数  
       NGX_MAIN_CONF|NGX_CONF_BLOCK|NGX_CONF_NOARGS,
+      // 解析http{}配置块，里面有server{}/location{}等
       ngx_http_block,
       0,
       0,
@@ -94,7 +117,7 @@ static ngx_command_t  ngx_http_commands[] = {
       ngx_null_command
 };
 
-
+// 没有create/init函数，只有出现http指令才创建配置结构体
 static ngx_core_module_t  ngx_http_module_ctx = {
     ngx_string("http"),
     NULL,
@@ -117,7 +140,9 @@ ngx_module_t  ngx_http_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+/**
+ * 当遇到http{}时调用此方法
+ */
 static char *
 ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -134,6 +159,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return "is duplicate";
     }
 
+    //创建ngx_http_conf_ctx_t结构体。 ngx_http_conf_ctx_t存储了所有http模块分别在main/src/loc级别的配置
     /* the main http context */
 
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
@@ -185,14 +211,17 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      * of the all http modules
      */
 
+    //遍历每个NGX_HTTP_MODULE
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
             continue;
         }
 
+        //对于http_module, 其ctx为 ngx_http_module_t
         module = cf->cycle->modules[m]->ctx;
         mi = cf->cycle->modules[m]->ctx_index;
 
+        //调用每个HTTP模块实现的create_main_conf方法
         if (module->create_main_conf) {
             ctx->main_conf[mi] = module->create_main_conf(cf);
             if (ctx->main_conf[mi] == NULL) {
@@ -200,6 +229,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        //调用每个HTTP模块实现的create_srv_conf方法
         if (module->create_srv_conf) {
             ctx->srv_conf[mi] = module->create_srv_conf(cf);
             if (ctx->srv_conf[mi] == NULL) {
@@ -207,6 +237,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        //调用每个HTTP模块实现的create_loc_conf方法
         if (module->create_loc_conf) {
             ctx->loc_conf[mi] = module->create_loc_conf(cf);
             if (ctx->loc_conf[mi] == NULL) {
@@ -218,6 +249,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     pcf = *cf;
     cf->ctx = ctx;
 
+    //遍历每个NGX_HTTP_MODULE
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
             continue;
@@ -225,6 +257,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         module = cf->cycle->modules[m]->ctx;
 
+        //调用每个HTTP模块的preconfiguration方法
         if (module->preconfiguration) {
             if (module->preconfiguration(cf) != NGX_OK) {
                 return NGX_CONF_ERROR;
@@ -247,19 +280,26 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
      * and its location{}s' loc_conf's
      */
 
+     //cmcf是全局唯一的代表http{}块的配置结构
     cmcf = ctx->main_conf[ngx_http_core_module.ctx_index];
     cscfp = cmcf->servers.elts;
 
+    //遍历每个NGX_HTTP_MODULE
     for (m = 0; cf->cycle->modules[m]; m++) {
+        //跳过非HTTP模块
         if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
             continue;
         }
 
+        //ngx_http_module_t
+        //ngx_modules[m]是一个 ngx_module_t模块结构体，它的 ctx成员对于 HTTP模块来说是 ngx_http_module_t接口
         module = cf->cycle->modules[m]->ctx;
+        //ctx_index是这个HTTP模块在所有 HTTP模块中的序号
         mi = cf->cycle->modules[m]->ctx_index;
 
         /* init http{} main_conf's */
 
+        //调用每个模块的init_main_conf方法
         if (module->init_main_conf) {
             rv = module->init_main_conf(cf, ctx->main_conf[mi]);
             if (rv != NGX_CONF_OK) {
@@ -267,6 +307,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        // 调用 ngx_http_merge_servers方法合并 ngx_modules[m]模块
         rv = ngx_http_merge_servers(cf, cmcf, module, mi);
         if (rv != NGX_CONF_OK) {
             goto failed;
@@ -276,6 +317,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     /* create location trees */
 
+    //构建由location块构造的静态二叉平衡查找树
     for (s = 0; s < cmcf->servers.nelts; s++) {
 
         clcf = cscfp[s]->ctx->loc_conf[ngx_http_core_module.ctx_index];
@@ -290,15 +332,20 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
 
+    //在调用HTTP模块的 postconfiguration方法向这7个阶段中添加处理方法前，
+    //需要先将phases数组中这7个阶段里的 handlers动态数组初始化（ngx_array_t类型需要执行ngx_array_init方法初始化），
+    //在这一步骤 中，通过调用ngx_http_init_phases方法来初始化这7个动态数组
     if (ngx_http_init_phases(cf, cmcf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
+    //初始化 cmcf->headers_in_hash hash表， 用于请求头处理的快速解析（根据请求头key， 查找其处理函数， 参考 ngx_http_headers_in ）
     if (ngx_http_init_headers_in_hash(cf, cmcf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
 
+    //遍历每个NGX_HTTP_MODULE
     for (m = 0; cf->cycle->modules[m]; m++) {
         if (cf->cycle->modules[m]->type != NGX_HTTP_MODULE) {
             continue;
@@ -306,6 +353,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
         module = cf->cycle->modules[m]->ctx;
 
+        //调用每个模块的init_main_conf方法
         if (module->postconfiguration) {
             if (module->postconfiguration(cf) != NGX_OK) {
                 return NGX_CONF_ERROR;
@@ -313,6 +361,7 @@ ngx_http_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //核心变量初始化
     if (ngx_http_variables_init_vars(cf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -409,6 +458,12 @@ ngx_http_init_phases(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
 }
 
 
+/**
+ * 初始化hash表ngx_hash_t cmcf->headers_in_hash， 加速hash查找
+ * 
+ * 将数组 ngx_http_headers_in 构造为hash表 cmcf->headers_in_hash
+ * 
+ */
 static ngx_int_t
 ngx_http_init_headers_in_hash(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
 {
@@ -417,12 +472,17 @@ ngx_http_init_headers_in_hash(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     ngx_hash_init_t     hash;
     ngx_http_header_t  *header;
 
+    //1. 构造用于初始化hash表的结构体 headers_in
+    /**
+     * headers_in 初始有32个ngx_hash_key_t元素
+     */
     if (ngx_array_init(&headers_in, cf->temp_pool, 32, sizeof(ngx_hash_key_t))
         != NGX_OK)
     {
         return NGX_ERROR;
     }
 
+    //计算hash值（将请求头key转小写，然后计算hash）
     for (header = ngx_http_headers_in; header->name.len; header++) {
         hk = ngx_array_push(&headers_in);
         if (hk == NULL) {
@@ -434,6 +494,7 @@ ngx_http_init_headers_in_hash(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
         hk->value = header;
     }
 
+    //构造hash初始化参数 ngx_hash_init_t hash
     hash.hash = &cmcf->headers_in_hash;
     hash.key = ngx_hash_key_lc;
     hash.max_size = 512;
@@ -442,6 +503,7 @@ ngx_http_init_headers_in_hash(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     hash.pool = cf->pool;
     hash.temp_pool = NULL;
 
+    //2. 初始化hash表 &cmcf->headers_in_hash
     if (ngx_hash_init(&hash, headers_in.elts, headers_in.nelts) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -558,7 +620,11 @@ ngx_http_init_phase_handlers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf)
     return NGX_OK;
 }
 
-
+/**
+ *  合并了server相关的配置项，它同时也会合并location 相关的配置项，
+ * cf 指向一个配置项
+ * 
+ */
 static char *
 ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_http_module_t *module, ngx_uint_t ctx_index)
@@ -569,18 +635,25 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
     ngx_http_core_loc_conf_t    *clcf;
     ngx_http_core_srv_conf_t   **cscfp;
 
+    //从 ngx_http_core_main_conf_t的 servers动态数组中可以获取所有的 ngx_http_core_srv_conf_t结构体
     cscfp = cmcf->servers.elts;
+    //注意，这个 ctx是在 http{}块下的全局 ngx_http_conf_ctx_t结构体
     ctx = (ngx_http_conf_ctx_t *) cf->ctx;
     saved = *ctx;
     rv = NGX_CONF_OK;
 
+    //遍历所有的server块下对应的 ngx_http_core_srv_conf_t结构体
     for (s = 0; s < cmcf->servers.nelts; s++) {
 
         /* merge the server{}s' srv_conf's */
 
+        //srv_conf将指向所有的 HTTP模块产生的 server相关的 srv级别配置结构体
         ctx->srv_conf = cscfp[s]->ctx->srv_conf;
 
+        // 如果当前 HTTP模块实现了 merge_srv_conf，则再调用合并方法
         if (module->merge_srv_conf) {
+            //注意，在这里合并配置项时， saved.srv_conf[ctx_index]参数是当前 HTTP模块在 http{}块下由 create_srv_conf方法创建的结构体，
+            //而 cscfp[s]->ctx->srv_conf[ctx_index]参数则是在server{}块下由 create_srv_conf方法创建的结构体
             rv = module->merge_srv_conf(cf, saved.srv_conf[ctx_index],
                                         cscfp[s]->ctx->srv_conf[ctx_index]);
             if (rv != NGX_CONF_OK) {
@@ -588,12 +661,15 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
             }
         }
 
+        // 如果当前 HTTP模块实现了merge_loc_conf，则再调用合并方法
         if (module->merge_loc_conf) {
 
             /* merge the server{}'s loc_conf */
 
+            //cscfp[s]->ctx->loc_conf这个动态数组中的成员都是由 server{}块下所有 HTTP模块的 create_loc_conf方法创建的结构体指针
             ctx->loc_conf = cscfp[s]->ctx->loc_conf;
 
+            //首先将 http{}块下 main级别与 server{}块下 srv级别的location相关的结构体合并
             rv = module->merge_loc_conf(cf, saved.loc_conf[ctx_index],
                                         cscfp[s]->ctx->loc_conf[ctx_index]);
             if (rv != NGX_CONF_OK) {
@@ -601,9 +677,11 @@ ngx_http_merge_servers(ngx_conf_t *cf, ngx_http_core_main_conf_t *cmcf,
             }
 
             /* merge the locations{}' loc_conf's */
-
+            //server块下 ngx_http_core_module模块使用 create_loc_conf方法产生的 ngx_http_core_loc_conf_t结构体，
+            //在 10.2.3节中曾经说过，它的locations成员将以双向链表的形式关联到所有当前 server{}块下的 location块
             clcf = cscfp[s]->ctx->loc_conf[ngx_http_core_module.ctx_index];
 
+            //调用ngx_http_merge_locations方法，将 server{}块与其所包含的 location{}块下的结构体进行合并
             rv = ngx_http_merge_locations(cf, clcf->locations,
                                           cscfp[s]->ctx->loc_conf,
                                           module, ctx_index);
@@ -620,7 +698,9 @@ failed:
     return rv;
 }
 
-
+/**
+ * 负责合并location相关的配置项
+ */
 static char *
 ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     void **loc_conf, ngx_http_module_t *module, ngx_uint_t ctx_index)
@@ -631,6 +711,7 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     ngx_http_core_loc_conf_t   *clcf;
     ngx_http_location_queue_t  *lq;
 
+    //如果 locations链表为空，也就是说，当前 server块下没有 location块，则立刻返回
     if (locations == NULL) {
         return NGX_CONF_OK;
     }
@@ -638,21 +719,27 @@ ngx_http_merge_locations(ngx_conf_t *cf, ngx_queue_t *locations,
     ctx = (ngx_http_conf_ctx_t *) cf->ctx;
     saved = *ctx;
 
+    //遍历 locations双向链表
     for (q = ngx_queue_head(locations);
          q != ngx_queue_sentinel(locations);
          q = ngx_queue_next(q))
     {
         lq = (ngx_http_location_queue_t *) q;
 
+        //如果 location后的匹配字符串不依靠 Nginx自定义的通配符就可以完全匹配的话，
+        //则 exact指向当前 location对应的 ngx_http_core_loc_conf_t结构体，否则使用inclusive指向该结构体，且 exact的优先级高于 inclusive
         clcf = lq->exact ? lq->exact : lq->inclusive;
+        //clcf->loc_conf这个指针数组里保存着当前location下所有 HTTP模块使用 create_loc_conf方法生成的结构体的指针
         ctx->loc_conf = clcf->loc_conf;
 
+        // 调用 merge_loc_conf方法合并 srv、 loc级别配置项
         rv = module->merge_loc_conf(cf, loc_conf[ctx_index],
                                     clcf->loc_conf[ctx_index]);
         if (rv != NGX_CONF_OK) {
             return rv;
         }
 
+        //因为 location{}中可以继续嵌套 location{}配置块，所以是可以继续合并的
         rv = ngx_http_merge_locations(cf, clcf->locations, clcf->loc_conf,
                                       module, ctx_index);
         if (rv != NGX_CONF_OK) {
@@ -795,6 +882,9 @@ ngx_http_init_locations(ngx_conf_t *cf, ngx_http_core_srv_conf_t *cscf,
 }
 
 
+/**
+ * 构建查找location的静态的二叉查找树
+ */
 static ngx_int_t
 ngx_http_init_static_location_trees(ngx_conf_t *cf,
     ngx_http_core_loc_conf_t *pclcf)
@@ -1820,6 +1910,7 @@ ngx_http_add_listening(ngx_conf_t *cf, ngx_http_conf_addr_t *addr)
 
     ls->addr_ntop = 1;
 
+    //设置新连接事件的回调方法为 ngx_http_init_connection
     ls->handler = ngx_http_init_connection;
 
     cscf = addr->default_server;

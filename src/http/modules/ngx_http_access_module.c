@@ -11,16 +11,16 @@
 
 
 typedef struct {
-    in_addr_t         mask;
-    in_addr_t         addr;
+    in_addr_t         mask;      //mask,24/32
+    in_addr_t         addr;      //32位无符号整型格式的ip地址 
     ngx_uint_t        deny;      /* unsigned  deny:1; */
-} ngx_http_access_rule_t;
+} ngx_http_access_rule_t;       //ipv4规则
 
 #if (NGX_HAVE_INET6)
 
 typedef struct {
-    struct in6_addr   addr;
-    struct in6_addr   mask;
+    struct in6_addr   addr;       //
+    struct in6_addr   mask;       //mask
     ngx_uint_t        deny;      /* unsigned  deny:1; */
 } ngx_http_access_rule6_t;
 
@@ -34,6 +34,9 @@ typedef struct {
 
 #endif
 
+/**
+ * 配置结构体
+ */
 typedef struct {
     ngx_array_t      *rules;     /* array of ngx_http_access_rule_t */
 #if (NGX_HAVE_INET6)
@@ -134,7 +137,7 @@ ngx_http_access_handler(ngx_http_request_t *r)
 
     switch (r->connection->sockaddr->sa_family) {
 
-    case AF_INET:
+    case AF_INET:       //ipv4
         if (alcf->rules) {
             sin = (struct sockaddr_in *) r->connection->sockaddr;
             return ngx_http_access_inet(r, alcf, sin->sin_addr.s_addr);
@@ -143,12 +146,21 @@ ngx_http_access_handler(ngx_http_request_t *r)
 
 #if (NGX_HAVE_INET6)
 
-    case AF_INET6:
+    case AF_INET6:      //ipv6
         sin6 = (struct sockaddr_in6 *) r->connection->sockaddr;
         p = sin6->sin6_addr.s6_addr;
 
+        /**
+         * IN6_IS_ADDR_V4MAPPED 检查是否是IPv4 映射映射成的ipv6
+         * ::ffff:w.x.y.z
+         *      前 80 位为 0
+         *      接下来 16 位为 1（即 ffff）
+         *      最后 32 位是 IPv4 地址的二进制表示
+         * IPv4 地址 192.168.1.1 的 IPv4 映射地址为 ::ffff:192.168.1.1。
+         */
         if (alcf->rules && IN6_IS_ADDR_V4MAPPED(&sin6->sin6_addr)) {
-            addr = (in_addr_t) p[12] << 24;
+            //addr 取其中的ipv4地址部分
+            addr = (in_addr_t) p[12] << 24;  
             addr += p[13] << 16;
             addr += p[14] << 8;
             addr += p[15];
@@ -156,6 +168,7 @@ ngx_http_access_handler(ngx_http_request_t *r)
         }
 
         if (alcf->rules6) {
+            //匹配ipv4规则
             return ngx_http_access_inet6(r, alcf, p);
         }
 
@@ -165,7 +178,7 @@ ngx_http_access_handler(ngx_http_request_t *r)
 
 #if (NGX_HAVE_UNIX_DOMAIN)
 
-    case AF_UNIX:
+    case AF_UNIX:       //unix:
         if (alcf->rules_un) {
             return ngx_http_access_unix(r, alcf);
         }
@@ -178,7 +191,9 @@ ngx_http_access_handler(ngx_http_request_t *r)
     return NGX_DECLINED;
 }
 
-
+/**
+ * 执行ipv4规则匹配
+ */
 static ngx_int_t
 ngx_http_access_inet(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf,
     in_addr_t addr)
@@ -187,12 +202,13 @@ ngx_http_access_inet(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf,
     ngx_http_access_rule_t  *rule;
 
     rule = alcf->rules->elts;
+    //遍历每一条规则
     for (i = 0; i < alcf->rules->nelts; i++) {
 
         ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "access: %08XD %08XD %08XD",
                        addr, rule[i].mask, rule[i].addr);
-
+        //ip命中CIDR
         if ((addr & rule[i].mask) == rule[i].addr) {
             return ngx_http_access_found(r, rule[i].deny);
         }
@@ -237,6 +253,7 @@ ngx_http_access_inet6(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf,
             }
         }
 
+        //命中
         return ngx_http_access_found(r, rule6[i].deny);
 
     next:
@@ -251,6 +268,9 @@ ngx_http_access_inet6(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf,
 
 #if (NGX_HAVE_UNIX_DOMAIN)
 
+/**
+ * 只进行了协议匹配
+ */
 static ngx_int_t
 ngx_http_access_unix(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf)
 {
@@ -272,30 +292,36 @@ ngx_http_access_unix(ngx_http_request_t *r, ngx_http_access_loc_conf_t *alcf)
 #endif
 
 
+/**
+ * deny or allow
+ * 如果deny且SATISFY_ALL， 则返回403
+ */
 static ngx_int_t
 ngx_http_access_found(ngx_http_request_t *r, ngx_uint_t deny)
 {
     ngx_http_core_loc_conf_t  *clcf;
 
-    if (deny) {
+    if (deny) {     //block
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-        if (clcf->satisfy == NGX_HTTP_SATISFY_ALL) {
+        if (clcf->satisfy == NGX_HTTP_SATISFY_ALL) {        //满足所有规则
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "access forbidden by rule");
         }
 
-        return NGX_HTTP_FORBIDDEN;
+        return NGX_HTTP_FORBIDDEN;  //403
     }
 
     return NGX_OK;
 }
 
-
+/**
+ * 解析配置指令： 	allow address | CIDR | unix: | all;
+ */
 static char *
 ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
-    ngx_http_access_loc_conf_t *alcf = conf;
+    ngx_http_access_loc_conf_t *alcf = conf;    //配置结构体
 
     ngx_int_t                   rc;
     ngx_uint_t                  all;
@@ -314,6 +340,7 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    //deny all
     if (value[1].len == 3 && ngx_strcmp(value[1].data, "all") == 0) {
         all = 1;
 
@@ -337,9 +364,9 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
-    if (cidr.family == AF_INET || all) {
+    if (cidr.family == AF_INET || all) {    
 
-        if (alcf->rules == NULL) {
+        if (alcf->rules == NULL) {      //如果数据还未初始化，则创建一个
             alcf->rules = ngx_array_create(cf->pool, 4,
                                            sizeof(ngx_http_access_rule_t));
             if (alcf->rules == NULL) {
@@ -347,20 +374,23 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
-        rule = ngx_array_push(alcf->rules);
+        rule = ngx_array_push(alcf->rules); //添加一个元素
         if (rule == NULL) {
             return NGX_CONF_ERROR;
         }
-
-        rule->mask = cidr.u.in.mask;
+        /**
+         * //如果all为1， mast=0, (addr & rule[i].mask) == rule[i].addr) 成立
+         * addr & rule[i].mask) == rule[i].addr
+         */
+        rule->mask = cidr.u.in.mask;        
         rule->addr = cidr.u.in.addr;
-        rule->deny = (value[0].data[0] == 'd') ? 1 : 0;
+        rule->deny = (value[0].data[0] == 'd') ? 1 : 0;     //deny or allow
     }
 
 #if (NGX_HAVE_INET6)
     if (cidr.family == AF_INET6 || all) {
 
-        if (alcf->rules6 == NULL) {
+        if (alcf->rules6 == NULL) {      //如果数据还未初始化，则创建一个
             alcf->rules6 = ngx_array_create(cf->pool, 4,
                                             sizeof(ngx_http_access_rule6_t));
             if (alcf->rules6 == NULL) {
@@ -368,7 +398,7 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
-        rule6 = ngx_array_push(alcf->rules6);
+        rule6 = ngx_array_push(alcf->rules6);   //添加一个元素
         if (rule6 == NULL) {
             return NGX_CONF_ERROR;
         }
@@ -382,7 +412,7 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #if (NGX_HAVE_UNIX_DOMAIN)
     if (cidr.family == AF_UNIX || all) {
 
-        if (alcf->rules_un == NULL) {
+        if (alcf->rules_un == NULL) {     //如果数据还未初始化，则创建一个
             alcf->rules_un = ngx_array_create(cf->pool, 1,
                                             sizeof(ngx_http_access_rule_un_t));
             if (alcf->rules_un == NULL) {
@@ -390,7 +420,7 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
-        rule_un = ngx_array_push(alcf->rules_un);
+        rule_un = ngx_array_push(alcf->rules_un);   //添加一个元素
         if (rule_un == NULL) {
             return NGX_CONF_ERROR;
         }
@@ -402,7 +432,9 @@ ngx_http_access_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
-
+/**
+ * 创建配置结构体
+ */
 static void *
 ngx_http_access_create_loc_conf(ngx_conf_t *cf)
 {
@@ -416,7 +448,9 @@ ngx_http_access_create_loc_conf(ngx_conf_t *cf)
     return conf;
 }
 
-
+/**
+ * 合并配置结构体
+ */
 static char *
 ngx_http_access_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -443,7 +477,9 @@ ngx_http_access_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     return NGX_CONF_OK;
 }
 
-
+/**
+ * 安装ACCESS_PHASE阶段handler
+ */
 static ngx_int_t
 ngx_http_access_init(ngx_conf_t *cf)
 {

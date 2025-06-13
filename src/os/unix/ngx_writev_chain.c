@@ -10,6 +10,10 @@
 #include <ngx_event.h>
 
 
+/**
+ * 将in链表数据构造成iovec结构发送出去
+ * 返回值为尚未发送取出的第一个chain
+ */
 ngx_chain_t *
 ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 {
@@ -53,12 +57,14 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
         /* create the iovec and coalesce the neighbouring bufs */
 
+        //创建vec结构，将in中的buf复制到vec的数组中
         cl = ngx_output_chain_to_iovec(&vec, in, limit - send, c->log);
 
         if (cl == NGX_CHAIN_ERROR) {
             return NGX_CHAIN_ERROR;
         }
 
+        //ngx_output_chain_to_iovec 可能是遇到了in_file的buf返回的
         if (cl && cl->buf->in_file) {
             ngx_log_error(NGX_LOG_ALERT, c->log, 0,
                           "file buf in writev "
@@ -80,6 +86,7 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
         send += vec.size;
 
+        //发送出去
         n = ngx_writev(c, &vec);
 
         if (n == NGX_ERROR) {
@@ -88,10 +95,12 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
         sent = (n == NGX_AGAIN) ? 0 : n;
 
-        c->sent += sent;
+        c->sent += sent;    //更新已经发送出去的字节数量
 
+        //更新in链表，标记已经消费过的数据
         in = ngx_chain_update_sent(in, sent);
 
+        //prev_send不为0
         if (send - prev_send != sent) {
             wev->ready = 0;
             return in;
@@ -103,7 +112,11 @@ ngx_writev_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     }
 }
 
-
+/**
+ * 将in转成ngx_iovec_t结构体
+ * limit为输出最大字节数
+ * 在遇到buf在文件里时也会返回。
+ */
 ngx_chain_t *
 ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in, size_t limit,
     ngx_log_t *log)
@@ -118,17 +131,18 @@ ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in, size_t limit,
     total = 0;
     n = 0;
 
+    //循环遍历in链表
     for ( /* void */ ; in && total < limit; in = in->next) {
 
-        if (ngx_buf_special(in->buf)) {
+        if (ngx_buf_special(in->buf)) {     //忽略控制buf
             continue;
         }
 
-        if (in->buf->in_file) {
+        if (in->buf->in_file) {     //如果是文件
             break;
         }
 
-        if (!ngx_buf_in_memory(in->buf)) {
+        if (!ngx_buf_in_memory(in->buf)) {      //不在内存里
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                           "bad buf in output chain "
                           "t:%d r:%d f:%d %p %p-%p %p %O-%O",
@@ -147,8 +161,10 @@ ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in, size_t limit,
             return NGX_CHAIN_ERROR;
         }
 
+        //本buf有效数据
         size = in->buf->last - in->buf->pos;
 
+        //只能读取limit字节
         if (size > limit - total) {
             size = limit - total;
         }
@@ -157,6 +173,7 @@ ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in, size_t limit,
             iov->iov_len += size;
 
         } else {
+            //如果达到了vec数组个数
             if (n == vec->nalloc) {
                 break;
             }
@@ -177,7 +194,10 @@ ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in, size_t limit,
     return in;
 }
 
-
+/**
+ * 将vec里存放的数据发送出去
+ * 返回的n是实际发送出去的字节数
+ */
 ssize_t
 ngx_writev(ngx_connection_t *c, ngx_iovec_t *vec)
 {

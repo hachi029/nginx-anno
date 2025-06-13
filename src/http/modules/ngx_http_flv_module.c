@@ -9,13 +9,21 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_flv_module.html
+ * 
+ * 为Flash Video(FLV)文件 提供服务端伪流媒体支持, 非默认开启
+ * 
+ * 将请求url映射为本地文件，读取本地文件并返回给客户端
+ * 
+ */
 static char *ngx_http_flv(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 
 static ngx_command_t  ngx_http_flv_commands[] = {
 
     { ngx_string("flv"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_http_flv,
+      ngx_http_flv,                 //注册了一个content_handler
       0,
       0,
       NULL },
@@ -58,6 +66,9 @@ ngx_module_t  ngx_http_flv_module = {
 };
 
 
+/**
+ * content_handler
+ */
 static ngx_int_t
 ngx_http_flv_handler(ngx_http_request_t *r)
 {
@@ -73,20 +84,24 @@ ngx_http_flv_handler(ngx_http_request_t *r)
     ngx_open_file_info_t       of;
     ngx_http_core_loc_conf_t  *clcf;
 
+    //只支持GET|HEAD
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
         return NGX_HTTP_NOT_ALLOWED;
     }
 
+    //请求url不能以/结尾
     if (r->uri.data[r->uri.len - 1] == '/') {
         return NGX_DECLINED;
     }
 
+    //不需要请求体
     rc = ngx_http_discard_request_body(r);
 
     if (rc != NGX_OK) {
         return rc;
     }
 
+    //将请求路径映射为本地文件路径
     last = ngx_http_map_uri_to_path(r, &path, &root, 0);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -103,6 +118,7 @@ ngx_http_flv_handler(ngx_http_request_t *r)
 
     ngx_memzero(&of, sizeof(ngx_open_file_info_t));
 
+    //打开文件相关配置
     of.read_ahead = clcf->read_ahead;
     of.directio = clcf->directio;
     of.valid = clcf->open_file_cache_valid;
@@ -110,13 +126,16 @@ ngx_http_flv_handler(ngx_http_request_t *r)
     of.errors = clcf->open_file_cache_errors;
     of.events = clcf->open_file_cache_events;
 
+    //禁止符号链接
     if (ngx_http_set_disable_symlinks(r, clcf, &path, &of) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    //打开文件
     if (ngx_open_cached_file(clcf->open_file_cache, &path, &of, r->pool)
         != NGX_OK)
     {
+        //打开失败，错误处理
         switch (of.err) {
 
         case 0:
@@ -155,6 +174,9 @@ ngx_http_flv_handler(ngx_http_request_t *r)
         return rc;
     }
 
+    //成功打开了
+ 
+    //不是文件
     if (!of.is_file) {
         return NGX_DECLINED;
     }
@@ -162,9 +184,10 @@ ngx_http_flv_handler(ngx_http_request_t *r)
     r->root_tested = !r->error_page;
 
     start = 0;
-    len = of.size;
+    len = of.size;      //len为文件大小
     i = 1;
 
+    //解析start请求参数。start指定从文件哪里开始读取
     if (r->args.len) {
 
         if (ngx_http_arg(r, (u_char *) "start", 5, &value) == NGX_OK) {
@@ -184,6 +207,7 @@ ngx_http_flv_handler(ngx_http_request_t *r)
 
     log->action = "sending flv to client";
 
+    //设置响应头
     r->headers_out.status = NGX_HTTP_OK;
     r->headers_out.content_length_n = len;
     r->headers_out.last_modified_time = of.mtime;
@@ -249,6 +273,9 @@ ngx_http_flv_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * 配置指令解析 flv; 没有任何配置指令，注册了一个content_handler
+ */
 static char *
 ngx_http_flv(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

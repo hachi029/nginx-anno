@@ -10,11 +10,14 @@
 #include <ngx_event.h>
 #include <ngx_channel.h>
 
-
+/**
+ * 描述接收到信号时的行为, 参考signals[]
+ */
 typedef struct {
-    int     signo;
-    char   *signame;
-    char   *name;
+    int     signo;      // 需要处理的信号
+    char   *signame;    // 信号对应的字符串名称
+    char   *name;       // 这个信号对应着的 Nginx命令
+    // 收到 signo信号后就会回调 handler方法
     void  (*handler)(int signo, siginfo_t *siginfo, void *ucontext);
 } ngx_signal_t;
 
@@ -30,12 +33,18 @@ int              ngx_argc;
 char           **ngx_argv;
 char           **ngx_os_argv;
 
+// 当前操作的进程在 ngx_processes数组中的下标
 ngx_int_t        ngx_process_slot;
 ngx_socket_t     ngx_channel;
+// ngx_processes数组中有意义的 ngx_process_t元素中最大的下标
 ngx_int_t        ngx_last_process;
+// 定义了Nginx服务中所有的进程，包括master进程和 worker进程
 ngx_process_t    ngx_processes[NGX_MAX_PROCESSES];
 
-
+/**
+ * 定义进程将会处理的所有信号
+ * 如果用户希望Nginx处理更多的信号，那么可以直接向signals数组中添加新的ngx_signal_t成员
+ */
 ngx_signal_t  signals[] = {
     { ngx_signal_value(NGX_RECONFIGURE_SIGNAL),
       "SIG" ngx_value(NGX_RECONFIGURE_SIGNAL),
@@ -82,7 +91,14 @@ ngx_signal_t  signals[] = {
     { 0, NULL, "", NULL }
 };
 
-
+/**
+ * 启动一个子进程
+ * 封装了fork系统调用，并且会从ngx_processes数组中选择一个还未使 用的ngx_process_t元素存储这个子进程的相关信息
+ * 如果子进程个数超过了最大值1024，那么将会返回NGX_INVALID_PID。
+ * 
+ * proc： 表示子进程的工作循环 ngx_worker_process_cycle  ngx_worker_process_cycle
+ * data：
+ */
 ngx_pid_t
 ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
     char *name, ngx_int_t respawn)
@@ -114,6 +130,26 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
 
         /* Solaris 9 still has no AF_LOCAL */
 
+        /**
+         * 创建一对关联的套接字sv[2]
+         * int socketpair(int d, int type, int protocol, int sv[2]);
+         * d表示域， 在Linux下通常取值为AF_UNIX
+         * type取值为SOCK_STREAM或者SOCK_DGRAM，它表示在 套接字上使用的是TCP还是UDP
+         * protocol必须传递0
+         * sv[2]是一个含有两个元素的整型数 组，实际上就是两个套接字
+         * 
+         * 返回0表示成功，-1表示失败
+         * 
+         * 当socketpair执行成功时，sv[2]这两个套接字具备下列关系：向sv[0]套接字写入数据， 将可以从sv[1]套接字中读取到刚写入的数据；
+         * 同样，向sv[1]套接字写入数据，也可以从 sv[0]中读取到写入的数据
+         * 
+         * 通常，在父、子进程通信前，会先调用socketpair方法创建这样一组套接字，在调用fork方法创建出子进程后，
+         * 将会在父进程中关闭sv[1]套接字，仅使用 sv[0]套接字用于向子进程发送数据以及接收子进程发送来的数据；
+         * 而在子进程中则关闭 sv[0]套接字，仅使用sv[1]套接字既可以接收父进程发来的数据，也可以向父进程发送数 据
+         * 
+         */
+        //ngx_processes[s].channel 数组正是将要用于父、子进程间通信的套接字对
+        //ngx_processes 定义了Nginx服务中所有的进程，包括master进程和 worker进程
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, ngx_processes[s].channel) == -1)
         {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
@@ -126,6 +162,7 @@ ngx_spawn_process(ngx_cycle_t *cycle, ngx_spawn_proc_pt proc, void *data,
                        ngx_processes[s].channel[0],
                        ngx_processes[s].channel[1]);
 
+        // 接下来会把 channel套接字对都设置为非阻塞模式
         if (ngx_nonblocking(ngx_processes[s].channel[0]) == -1) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
                           ngx_nonblocking_n " failed while spawning \"%s\"",
@@ -280,26 +317,32 @@ ngx_execute_proc(ngx_cycle_t *cycle, void *data)
     exit(1);
 }
 
-
+/**
+ * 
+ * 初始化所有的信号
+ * 
+ */
 ngx_int_t
 ngx_init_signals(ngx_log_t *log)
 {
     ngx_signal_t      *sig;
-    struct sigaction   sa;
+    struct sigaction   sa;  // Linux内核使用的信号
 
+    // 遍历 signals数组，处理每一个 ngx_signal_t类型的结构体
     for (sig = signals; sig->signo != 0; sig++) {
         ngx_memzero(&sa, sizeof(struct sigaction));
 
-        if (sig->handler) {
-            sa.sa_sigaction = sig->handler;
+        if (sig->handler) { 
+            sa.sa_sigaction = sig->handler;     // 设置信号的处理方法为 handler方法
             sa.sa_flags = SA_SIGINFO;
 
         } else {
             sa.sa_handler = SIG_IGN;
         }
 
+        // 将 sa中的位全部置为 0
         sigemptyset(&sa.sa_mask);
-        if (sigaction(sig->signo, &sa, NULL) == -1) {
+        if (sigaction(sig->signo, &sa, NULL) == -1) {       // 向 Linux注册信号的回调方法
 #if (NGX_VALGRIND)
             ngx_log_error(NGX_LOG_ALERT, log, ngx_errno,
                           "sigaction(%s) failed, ignored", sig->signame);
@@ -314,7 +357,14 @@ ngx_init_signals(ngx_log_t *log)
     return NGX_OK;
 }
 
-
+/**
+ * 当每个子进程 意外退出时，master父进程会接收到Linux内核发来的CHLD信号，
+ * 而处理信号的 ngx_signal_handler方法这时将会做以下处理:
+ * 
+ * 将sig_reap标志位置为1，调用 ngx_process_get_status方法修改ngx_processes数组中所有子进程的状态
+ * （通过waitpid系统调用 得到意外结束的子进程ID，
+ * 然后遍历ngx_processes数组找到该子进程ID对应的ngx_process_t 结构体，将其exited标志位置为1）
+ */
 static void
 ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext)
 {
@@ -399,6 +449,8 @@ ngx_signal_handler(int signo, siginfo_t *siginfo, void *ucontext)
             break;
 
         case SIGCHLD:
+            //果ngx_reap标志位为1，则表示需要监控所有的子进程
+            //同时调用ngx_reap_children方法来管理子进程
             ngx_reap = 1;
             break;
         }
@@ -607,7 +659,10 @@ ngx_unlock_mutexes(ngx_pid_t pid)
     }
 }
 
-
+/**
+ * https://nginx.org/en/docs/ngx_core_module.html#debug_points
+ * 
+ */
 void
 ngx_debug_point(void)
 {

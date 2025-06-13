@@ -14,11 +14,11 @@
 
 
 struct ngx_file_s {
-    ngx_fd_t                   fd;
-    ngx_str_t                  name;
-    ngx_file_info_t            info;
+    ngx_fd_t                   fd;      // 文件句柄描述符
+    ngx_str_t                  name;    // 文件名称
+    ngx_file_info_t            info;    // 文件大小等资源信息，实际就是 Linux系统定义的 stat结构
 
-    off_t                      offset;
+    off_t                      offset;  //读写偏移
     off_t                      sys_offset;
 
     ngx_log_t                 *log;
@@ -35,7 +35,7 @@ struct ngx_file_s {
 #endif
 
     unsigned                   valid_info:1;
-    unsigned                   directio:1;
+    unsigned                   directio:1;  // 与配置文件中的 directio配置项相对应，在发送大文件时可以设为 1
 };
 
 

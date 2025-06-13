@@ -13,30 +13,47 @@
 #include <zlib.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_gunzip_module.html
+ * 
+ * 是一个filter, 解压上游带有“Content-Encoding: gzip”  以应对浏览器不支持gzip的场景
+ * 
+ * 即使开启了本模块，如果客户端支持gzip响应，本模块也不会做解压缩的操作
+ * 
+ * 配置示例：
+ * location /storage/ {
+    gunzip on;
+    ...
+  }
+ */
+
+ /**
+  * 本模块的配置结构体
+  */
 typedef struct {
-    ngx_flag_t           enable;
-    ngx_bufs_t           bufs;
+    ngx_flag_t           enable;        //标识是否开启了本模块
+    ngx_bufs_t           bufs;          //  gunzip_buffers number size; 解压缩时使用的缓存数量和大小
 } ngx_http_gunzip_conf_t;
 
 
 typedef struct {
-    ngx_chain_t         *in;
-    ngx_chain_t         *free;
+    ngx_chain_t         *in;        //存放的是输入，即压缩流数据
+    ngx_chain_t         *free;      //待释放的    ngx_chain_t
     ngx_chain_t         *busy;
     ngx_chain_t         *out;
     ngx_chain_t        **last_out;
 
-    ngx_buf_t           *in_buf;
-    ngx_buf_t           *out_buf;
-    ngx_int_t            bufs;
+    ngx_buf_t           *in_buf;    //输入buf, zlib从这里读取需要解压缩的数据
+    ngx_buf_t           *out_buf;   //输出buf, zlib解压缩后，将数据输出到这里
+    ngx_int_t            bufs;      //已经使用的buf数量
 
-    unsigned             started:1;
+    unsigned             started:1;     //是否已经开始
     unsigned             flush:4;
     unsigned             redo:1;
-    unsigned             done:1;
-    unsigned             nomem:1;
+    unsigned             done:1;       //是否已结束
+    unsigned             nomem:1;      //标识没有可用内存了( ctx->bufs < conf->bufs.num )
 
-    z_stream             zstream;
+    z_stream             zstream;      //gzip实现结构体
     ngx_http_request_t  *request;
 } ngx_http_gunzip_ctx_t;
 
@@ -64,14 +81,14 @@ static char *ngx_http_gunzip_merge_conf(ngx_conf_t *cf,
 
 static ngx_command_t  ngx_http_gunzip_filter_commands[] = {
 
-    { ngx_string("gunzip"),
+    { ngx_string("gunzip"),             //配置是否开启解压缩
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_gunzip_conf_t, enable),
       NULL },
 
-    { ngx_string("gunzip_buffers"),
+    { ngx_string("gunzip_buffers"),     //配置解压缩使用的缓冲区大小和个数
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_bufs_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -84,6 +101,7 @@ static ngx_command_t  ngx_http_gunzip_filter_commands[] = {
 
 static ngx_http_module_t  ngx_http_gunzip_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //注册 header_filter和body_filter
     ngx_http_gunzip_filter_init,           /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -117,18 +135,24 @@ static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
 
+
+/**
+ * header filter
+ */
 static ngx_int_t
 ngx_http_gunzip_header_filter(ngx_http_request_t *r)
 {
     ngx_http_gunzip_ctx_t   *ctx;
     ngx_http_gunzip_conf_t  *conf;
 
+    //获取配置
     conf = ngx_http_get_module_loc_conf(r, ngx_http_gunzip_filter_module);
 
     /* TODO support multiple content-codings */
     /* TODO always gunzip - due to configuration or module request */
     /* TODO ignore content encoding? */
 
+    //如果未开启gunzip 或 响应头 content_encoding 不是gzip
     if (!conf->enable
         || r->headers_out.content_encoding == NULL
         || r->headers_out.content_encoding->value.len != 4
@@ -141,14 +165,15 @@ ngx_http_gunzip_header_filter(ngx_http_request_t *r)
     r->gzip_vary = 1;
 
     if (!r->gzip_tested) {
-        if (ngx_http_gzip_ok(r) == NGX_OK) {
+        if (ngx_http_gzip_ok(r) == NGX_OK) {  //如果客户端支持gzip
             return ngx_http_next_header_filter(r);
         }
 
-    } else if (r->gzip_ok) {
+    } else if (r->gzip_ok) {        //如果客户端支持gzip
         return ngx_http_next_header_filter(r);
     }
 
+    //创建配置上下文
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_gunzip_ctx_t));
     if (ctx == NULL) {
         return NGX_ERROR;
@@ -163,6 +188,7 @@ ngx_http_gunzip_header_filter(ngx_http_request_t *r)
     r->headers_out.content_encoding->hash = 0;
     r->headers_out.content_encoding = NULL;
 
+    //清除content_length和accept_ranges请求头
     ngx_http_clear_content_length(r);
     ngx_http_clear_accept_ranges(r);
     ngx_http_weak_etag(r);
@@ -171,6 +197,10 @@ ngx_http_gunzip_header_filter(ngx_http_request_t *r)
 }
 
 
+/**
+ * body_filter
+ * 
+ */
 static ngx_int_t
 ngx_http_gunzip_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -181,6 +211,7 @@ ngx_http_gunzip_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_gunzip_filter_module);
 
+    //如果没有自定义上下文，不需要处理
     if (ctx == NULL || ctx->done) {
         return ngx_http_next_body_filter(r, in);
     }
@@ -188,13 +219,16 @@ ngx_http_gunzip_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http gunzip filter");
 
+    //执行初始化ctx->zstream
     if (!ctx->started) {
         if (ngx_http_gunzip_filter_inflate_start(r, ctx) != NGX_OK) {
             goto failed;
         }
     }
 
+    //如果有数据
     if (in) {
+        //复制到ctx->in上
         if (ngx_chain_add_copy(r->pool, &ctx->in, in) != NGX_OK) {
             goto failed;
         }
@@ -298,6 +332,9 @@ failed:
 }
 
 
+/**
+ * 解压缩准备初始化
+ */
 static ngx_int_t
 ngx_http_gunzip_filter_inflate_start(ngx_http_request_t *r,
     ngx_http_gunzip_ctx_t *ctx)
@@ -307,9 +344,9 @@ ngx_http_gunzip_filter_inflate_start(ngx_http_request_t *r,
     ctx->zstream.next_in = Z_NULL;
     ctx->zstream.avail_in = 0;
 
-    ctx->zstream.zalloc = ngx_http_gunzip_filter_alloc;
-    ctx->zstream.zfree = ngx_http_gunzip_filter_free;
-    ctx->zstream.opaque = ctx;
+    ctx->zstream.zalloc = ngx_http_gunzip_filter_alloc;     //申请内存
+    ctx->zstream.zfree = ngx_http_gunzip_filter_free;       //释放内存
+    ctx->zstream.opaque = ctx;  //回调传参  
 
     /* windowBits +16 to decode gzip, zlib 1.2.0.4+ */
     rc = inflateInit2(&ctx->zstream, MAX_WBITS + 16);
@@ -329,6 +366,9 @@ ngx_http_gunzip_filter_inflate_start(ngx_http_request_t *r,
 }
 
 
+/**
+ * 将ctx->in上的第一个buf挂到ctx->zstream.next_in链表上
+ */
 static ngx_int_t
 ngx_http_gunzip_filter_add_data(ngx_http_request_t *r,
     ngx_http_gunzip_ctx_t *ctx)
@@ -388,7 +428,7 @@ ngx_http_gunzip_filter_get_buf(ngx_http_request_t *r,
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_gunzip_filter_module);
 
-    if (ctx->free) {
+    if (ctx->free) {                              //待free的buf
 
         cl = ctx->free;
         ctx->out_buf = cl->buf;
@@ -398,7 +438,7 @@ ngx_http_gunzip_filter_get_buf(ngx_http_request_t *r,
 
         ctx->out_buf->flush = 0;
 
-    } else if (ctx->bufs < conf->bufs.num) {
+    } else if (ctx->bufs < conf->bufs.num) {        //仍有可用buf
 
         ctx->out_buf = ngx_create_temp_buf(r->pool, conf->bufs.size);
         if (ctx->out_buf == NULL) {
@@ -435,6 +475,7 @@ ngx_http_gunzip_filter_inflate(ngx_http_request_t *r,
                    ctx->zstream.avail_in, ctx->zstream.avail_out,
                    ctx->flush, ctx->redo);
 
+    //解压缩
     rc = inflate(&ctx->zstream, ctx->flush);
 
     if (rc != Z_OK && rc != Z_STREAM_END && rc != Z_BUF_ERROR) {
@@ -647,6 +688,9 @@ ngx_http_gunzip_filter_free(void *opaque, void *address)
 }
 
 
+/**
+ * 创建配置结构体
+ */
 static void *
 ngx_http_gunzip_create_conf(ngx_conf_t *cf)
 {
@@ -669,6 +713,9 @@ ngx_http_gunzip_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并配置结构体
+ */
 static char *
 ngx_http_gunzip_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -684,6 +731,10 @@ ngx_http_gunzip_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * postconfiguration 回调
+ * 注册 header_filter和body_filter
+ */
 static ngx_int_t
 ngx_http_gunzip_filter_init(ngx_conf_t *cf)
 {

@@ -223,32 +223,76 @@
 
 #define NGX_MODULE_V1_PADDING  0, 0, 0, 0, 0, 0, 0, 0
 
-
+/**
+ * 作为所有模块的通用接口
+ */
 struct ngx_module_s {
+    //ctx_index表明了模块在相同类型模块中的顺序
     ngx_uint_t            ctx_index;
+    //index是模块在ngx_modules.c中所有模块数组的索引
     ngx_uint_t            index;
 
+    // 1.10，模块的名字，标识字符串，默认是空指针
+    // 由脚本生成ngx_module_names数组，然后在ngx_preinit_modules里填充
+    // 动态模块在ngx_load_module里设置名字
     char                 *name;
 
     ngx_uint_t            spare0;
     ngx_uint_t            spare1;
 
     ngx_uint_t            version;
+    // 模块的二进制兼容性签名，即NGX_MODULE_SIGNATURE
     const char           *signature;
 
-    void                 *ctx;
-    ngx_command_t        *commands;
-    ngx_uint_t            type;
+    /**
+     * ctx用于指向一类模块的上下文结构体，为什么需要ctx呢？因为前面说过， 
+     * Nginx模块有许多种类，不同类模块之间的功能差别很大。例如，事件类型的模块主要处理 I/O事件相关的功能， 
+     * HTTP类型的模块主要处理 HTTP应用层的功能。这样，每个模块都有了自己的特性，而 ctx将会指向特定类型模块的公共接口。
+     * 例如，在HTTP模块中， ctx需要指向ngx_http_module_t结构体
+     * core模块的ctx
+     *   typedef struct {
+     *      ngx_str_t             name;
+     *      void               *(*create_conf)(ngx_cycle_t *cycle);
+     *      char               *(*init_conf)(ngx_cycle_t *cycle, void *conf);
+     *   } ngx_core_module_t;
+     */
 
-    ngx_int_t           (*init_master)(ngx_log_t *log);
+    void                 *ctx;      //每种模块具体的ctx， 如ngx_http_module_t、ngx_event_module_t
+    ngx_command_t        *commands; //模块定义的指令，指向第一个指令地址，最后一个置null标识数组结束
+    
+    
+    /**
+     * type表示该模块的类型，它与 ctx指针是紧密相关的。在官方 Nginx中，它的取值范围是以下 5种
+     * NGX_HTTP_MODULE、NGX_CORE_MODULE、 NGX_CONF_MODULE、 NGX_EVENT_MODULE、NGX_MAIL_MODULE
+     */
+    ngx_uint_t            type;     //模块类型
 
-    ngx_int_t           (*init_module)(ngx_cycle_t *cycle);
+    /**
+     * 在 Nginx的启动、停止过程中，以下 7个函数指针表示有 7个执行点会分别调用这7种方法
+     */
+    ngx_int_t           (*init_master)(ngx_log_t *log);     //master进程启动时回调, 框架代码从来不会调用
 
+    /**
+     * 在初始化所有模块时被调用。在master/worker模式下，这个阶段将在启动worker子进程前完成
+     */
+    ngx_int_t           (*init_module)(ngx_cycle_t *cycle); //
+
+    /**
+     * init_process回调方法在正常服务前被调用。
+     * 在 master/worker模式下，多个 worker子进程已经产生，在每个 worker进程的初始化过程会调用所有模块的init_process函数
+     */
     ngx_int_t           (*init_process)(ngx_cycle_t *cycle);
-    ngx_int_t           (*init_thread)(ngx_cycle_t *cycle);
-    void                (*exit_thread)(ngx_cycle_t *cycle);
-    void                (*exit_process)(ngx_cycle_t *cycle);
 
+     // init_thread目前nginx不会调用
+    ngx_int_t           (*init_thread)(ngx_cycle_t *cycle);
+    // exit_thread目前nginx不会调用
+    void                (*exit_thread)(ngx_cycle_t *cycle);
+
+    /**
+     *  exit_process回调方法在服务停止前调用。在 master/worker模式下， worker进程会在退出前调用它
+     */
+    void                (*exit_process)(ngx_cycle_t *cycle);
+    // exit_master回调方法将在 master进程退出前被调用
     void                (*exit_master)(ngx_cycle_t *cycle);
 
     uintptr_t             spare_hook0;
@@ -261,10 +305,15 @@ struct ngx_module_s {
     uintptr_t             spare_hook7;
 };
 
-
+/**
+ * 核心模块的接口
+ */
 typedef struct {
+    // 核心模块名称
     ngx_str_t             name;
+    //解析配置项前， Nginx框架会调用 create_conf方法, 创建存储配置项的数据结构
     void               *(*create_conf)(ngx_cycle_t *cycle);
+    //解析配置项完成后， Nginx框架会调用 init_conf方法, 在解析完配置文件后，使用解析出的配置项初始化核心模块功能。
     char               *(*init_conf)(ngx_cycle_t *cycle, void *conf);
 } ngx_core_module_t;
 

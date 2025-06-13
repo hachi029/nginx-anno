@@ -9,16 +9,21 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_addition_module.html
+ * 默认未启用， --with-http_addition_module
+*/
 
 typedef struct {
-    ngx_str_t     before_body;
+    ngx_str_t     before_body;      //add_before_body uri;
     ngx_str_t     after_body;
 
-    ngx_hash_t    types;
+    ngx_hash_t    types;            //Allows adding text in responses with the specified MIME types
     ngx_array_t  *types_keys;
 } ngx_http_addition_conf_t;
 
 
+//模块自定义上下文
 typedef struct {
     ngx_uint_t    before_body_sent;
 } ngx_http_addition_ctx_t;
@@ -30,6 +35,7 @@ static char *ngx_http_addition_merge_conf(ngx_conf_t *cf, void *parent,
 static ngx_int_t ngx_http_addition_filter_init(ngx_conf_t *cf);
 
 
+//配置在http{}或server{}或location{}中
 static ngx_command_t  ngx_http_addition_commands[] = {
 
     { ngx_string("add_before_body"),
@@ -87,7 +93,7 @@ ngx_module_t  ngx_http_addition_filter_module = {
     NGX_MODULE_V1_PADDING
 };
 
-
+//两个全局指针
 static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
@@ -98,20 +104,24 @@ ngx_http_addition_header_filter(ngx_http_request_t *r)
     ngx_http_addition_ctx_t   *ctx;
     ngx_http_addition_conf_t  *conf;
 
+    // 只处理主请求
     if (r->headers_out.status != NGX_HTTP_OK || r != r->main) {
         return ngx_http_next_header_filter(r);
     }
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_addition_filter_module);
 
+    //未配置add_before_body和add_after_body
     if (conf->before_body.len == 0 && conf->after_body.len == 0) {
         return ngx_http_next_header_filter(r);
     }
 
+    // 只处理指定类型的响应
     if (ngx_http_test_content_type(r, &conf->types) == NULL) {
         return ngx_http_next_header_filter(r);
     }
 
+    //分配上下文结构体
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_addition_ctx_t));
     if (ctx == NULL) {
         return NGX_ERROR;
@@ -121,7 +131,7 @@ ngx_http_addition_header_filter(ngx_http_request_t *r)
 
     ngx_http_clear_content_length(r);
     ngx_http_clear_accept_ranges(r);
-    ngx_http_weak_etag(r);
+    ngx_http_weak_etag(r);      //
 
     r->preserve_body = 1;
 
@@ -139,7 +149,7 @@ ngx_http_addition_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_http_addition_ctx_t   *ctx;
     ngx_http_addition_conf_t  *conf;
 
-    if (in == NULL || r->header_only) {
+    if (in == NULL || r->header_only) {     //HEAD 方法, header_only为1
         return ngx_http_next_body_filter(r, in);
     }
 
@@ -151,11 +161,11 @@ ngx_http_addition_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_addition_filter_module);
 
-    if (!ctx->before_body_sent) {
+    if (!ctx->before_body_sent) {           //还没发送过add_before_body
         ctx->before_body_sent = 1;
 
         if (conf->before_body.len) {
-            if (ngx_http_subrequest(r, &conf->before_body, NULL, &sr, NULL, 0)
+            if (ngx_http_subrequest(r, &conf->before_body, NULL, &sr, NULL, 0)      //启动subrequest
                 != NGX_OK)
             {
                 return NGX_ERROR;
@@ -163,7 +173,7 @@ ngx_http_addition_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
         }
     }
 
-    if (conf->after_body.len == 0) {
+    if (conf->after_body.len == 0) {        //没有配置add_after_body
         ngx_http_set_ctx(r, NULL, ngx_http_addition_filter_module);
         return ngx_http_next_body_filter(r, in);
     }
@@ -171,16 +181,17 @@ ngx_http_addition_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     last = 0;
 
     for (cl = in; cl; cl = cl->next) {
-        if (cl->buf->last_buf) {
+        if (cl->buf->last_buf) {        //如果是最后一个buf
             cl->buf->last_buf = 0;
-            cl->buf->last_in_chain = 1;
-            cl->buf->sync = 1;
-            last = 1;
+            cl->buf->last_in_chain = 1; //设置为chain中最后一个buf
+            cl->buf->sync = 1;          //设置sync
+            last = 1;                   //已经达到最后一个buf
         }
     }
 
     rc = ngx_http_next_body_filter(r, in);
 
+    //如果发送失败或者不是最后一个buf，或者没有配置add_after_body
     if (rc == NGX_ERROR || !last || conf->after_body.len == 0) {
         return rc;
     }

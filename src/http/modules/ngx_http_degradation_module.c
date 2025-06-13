@@ -10,13 +10,24 @@
 #include <ngx_http.h>
 
 
+/**
+ * 默认不启用
+ * 允许在nginx占用内存超限的情况下返回204或444码，进行服务降级
+ */
+
+/**
+ * 本模块main级别配置结构体
+ */
 typedef struct {
-    size_t      sbrk_size;
+    size_t      sbrk_size;      // degradation sbrk=10k
 } ngx_http_degradation_main_conf_t;
 
 
+/**
+ * 本模块location级别配置结构体
+ */
 typedef struct {
-    ngx_uint_t  degrade;
+    ngx_uint_t  degrade;        //是一个枚举值，值是ngx_http_degrade 其中之一
 } ngx_http_degradation_loc_conf_t;
 
 
@@ -38,14 +49,14 @@ static ngx_int_t ngx_http_degradation_init(ngx_conf_t *cf);
 
 static ngx_command_t  ngx_http_degradation_commands[] = {
 
-    { ngx_string("degradation"),
+    { ngx_string("degradation"),        //degradation sbrk=1k;
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_http_degradation,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
       NULL },
 
-    { ngx_string("degrade"),
+    { ngx_string("degrade"),        //枚举值 ngx_http_degrade 其中之一
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_enum_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -58,6 +69,7 @@ static ngx_command_t  ngx_http_degradation_commands[] = {
 
 static ngx_http_module_t  ngx_http_degradation_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //安装了一个PREACCESS_PHASE handler
     ngx_http_degradation_init,             /* postconfiguration */
 
     ngx_http_degradation_create_main_conf, /* create main configuration */
@@ -87,6 +99,9 @@ ngx_module_t  ngx_http_degradation_module = {
 };
 
 
+/**
+ * PREACCESS_PHASE 阶段执行的handler
+ */
 static ngx_int_t
 ngx_http_degradation_handler(ngx_http_request_t *r)
 {
@@ -102,6 +117,10 @@ ngx_http_degradation_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * 判断当前是否需要降级
+ * 返回1 则需要降级
+ */
 ngx_uint_t
 ngx_http_degraded(ngx_http_request_t *r)
 {
@@ -113,7 +132,7 @@ ngx_http_degraded(ngx_http_request_t *r)
 
     dmcf = ngx_http_get_module_main_conf(r, ngx_http_degradation_module);
 
-    if (dmcf->sbrk_size) {
+    if (dmcf->sbrk_size) {      //如果配置的有值
 
         log = 0;
         now = ngx_time();
@@ -129,6 +148,8 @@ ngx_http_degraded(ngx_http_request_t *r)
              * use a function address to subtract the loading address
              */
 
+            //sbrk(0) 返回当前 heap 的顶部地址
+            //
             sbrk_size = (size_t) sbrk(0) - ((uintptr_t) ngx_palloc & ~0x3FFFFF);
             sbrk_time = now;
             log = 1;
@@ -136,6 +157,7 @@ ngx_http_degraded(ngx_http_request_t *r)
 
         /* unlock mutex */
 
+        //如果当前占用的内存已经大于配置的内存，则进行降级
         if (sbrk_size >= dmcf->sbrk_size) {
             if (log) {
                 ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
@@ -151,6 +173,9 @@ ngx_http_degraded(ngx_http_request_t *r)
 }
 
 
+/**
+ * 创建main级别配置结构体
+ */
 static void *
 ngx_http_degradation_create_main_conf(ngx_conf_t *cf)
 {
@@ -165,6 +190,9 @@ ngx_http_degradation_create_main_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 创建location级别配置结构体
+ */
 static void *
 ngx_http_degradation_create_loc_conf(ngx_conf_t *cf)
 {
@@ -181,6 +209,9 @@ ngx_http_degradation_create_loc_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并location级别配置结构体
+ */
 static char *
 ngx_http_degradation_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -193,6 +224,11 @@ ngx_http_degradation_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 解析配置指令 degradation 
+ * 
+ * 配置指令格式 degradation sbrk= ;
+ */
 static char *
 ngx_http_degradation(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -207,6 +243,7 @@ ngx_http_degradation(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         s.len = value[1].len - 5;
         s.data = value[1].data + 5;
 
+        //解析size参数， 1k 10m .., 转为字节为单位的size_t
         dmcf->sbrk_size = ngx_parse_size(&s);
         if (dmcf->sbrk_size == (size_t) NGX_ERROR) {
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -224,6 +261,9 @@ ngx_http_degradation(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * postconfiguration 阶段执行， 安装一个 PREACCESS_PHASE 阶段执行的handler
+ */
 static ngx_int_t
 ngx_http_degradation_init(ngx_conf_t *cf)
 {

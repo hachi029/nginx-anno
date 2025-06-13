@@ -17,6 +17,15 @@ ngx_atomic_t         *ngx_temp_number = &temp_number;
 ngx_atomic_int_t      ngx_random_number = 123456;
 
 
+/**
+ * 获取全路径。
+ * prefix：为前缀
+ * name: 为路径,可能为绝对路径或相对路径
+ * 
+ * 如果name是绝对路径，直接返回
+ * 如果name是相对路径， 将name置为 prefix+name
+ * 
+ */
 ngx_int_t
 ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
 {
@@ -24,7 +33,7 @@ ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
     u_char     *p, *n;
     ngx_int_t   rc;
 
-    rc = ngx_test_full_name(name);
+    rc = ngx_test_full_name(name);  //name以/开头，已经是全路径了
 
     if (rc == NGX_OK) {
         return rc;
@@ -40,12 +49,15 @@ ngx_get_full_name(ngx_pool_t *pool, ngx_str_t *prefix, ngx_str_t *name)
 
 #endif
 
+    //申请内存， prefix.len + name.len+1
     n = ngx_pnalloc(pool, len + name->len + 1);
     if (n == NULL) {
         return NGX_ERROR;
     }
 
+    //拷贝prefix
     p = ngx_cpymem(n, prefix->data, len);
+    //拷贝name
     ngx_cpystrn(p, name->data, name->len + 1);
 
     name->len += len;
@@ -110,7 +122,7 @@ ngx_write_chain_to_temp_file(ngx_temp_file_t *tf, ngx_chain_t *chain)
 {
     ngx_int_t  rc;
 
-    if (tf->file.fd == NGX_INVALID_FILE) {
+    if (tf->file.fd == NGX_INVALID_FILE) {      //如果临时文件没有打开，则创建临时文件
         rc = ngx_create_temp_file(&tf->file, tf->path, tf->pool,
                                   tf->persistent, tf->clean, tf->access);
 

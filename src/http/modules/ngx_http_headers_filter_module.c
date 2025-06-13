@@ -10,6 +10,14 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_headers_module.html
+ * 
+ * 允许添加任意的响应header
+ *  
+ *  add_header name value [always];
+ * 
+ */
 typedef struct ngx_http_header_val_s  ngx_http_header_val_t;
 
 typedef ngx_int_t (*ngx_http_set_header_pt)(ngx_http_request_t *r,
@@ -23,12 +31,15 @@ typedef struct {
 } ngx_http_set_header_t;
 
 
+/**
+ * 代表了配置文件中 add_header 或 add_trailer 一条配置指令
+ */
 struct ngx_http_header_val_s {
-    ngx_http_complex_value_t   value;
-    ngx_str_t                  key;
-    ngx_http_set_header_pt     handler;
-    ngx_uint_t                 offset;
-    ngx_uint_t                 always;  /* unsigned  always:1 */
+    ngx_http_complex_value_t   value;       //header值支持复杂变量
+    ngx_str_t                  key;         //header名称
+    ngx_http_set_header_pt     handler;     //回调handler, 一般为 ngx_http_add_header
+    ngx_uint_t                 offset;      //r->headers_in 或r->headers_out中成员的offset
+    ngx_uint_t                 always;  /* unsigned  always:1 */    //标识，如果为1，无论什么响应状态码，都会添加响应header
 };
 
 
@@ -46,9 +57,9 @@ typedef enum {
 typedef struct {
     ngx_http_expires_t         expires;
     time_t                     expires_time;
-    ngx_http_complex_value_t  *expires_value;
-    ngx_array_t               *headers;
-    ngx_array_t               *trailers;
+    ngx_http_complex_value_t  *expires_value;       //expire 配置指令配置的包含变量的值，需在运行时获取值
+    ngx_array_t               *headers;             //元素类型为 ngx_http_header_val_t
+    ngx_array_t               *trailers;            //元素类型为 ngx_http_header_val_t
 } ngx_http_headers_conf_t;
 
 
@@ -129,6 +140,7 @@ static ngx_command_t  ngx_http_headers_filter_commands[] = {
 
 static ngx_http_module_t  ngx_http_headers_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //注册headers_filter和body_filter
     ngx_http_headers_filter_init,          /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -162,6 +174,9 @@ static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
 
+/**
+ * header_filter
+ */
 static ngx_int_t
 ngx_http_headers_filter(ngx_http_request_t *r)
 {
@@ -170,12 +185,14 @@ ngx_http_headers_filter(ngx_http_request_t *r)
     ngx_http_header_val_t    *h;
     ngx_http_headers_conf_t  *conf;
 
+    //非主请求
     if (r != r->main) {
         return ngx_http_next_header_filter(r);
     }
 
     conf = ngx_http_get_module_loc_conf(r, ngx_http_headers_filter_module);
 
+    //OFF
     if (conf->expires == NGX_HTTP_EXPIRES_OFF
         && conf->headers == NULL
         && conf->trailers == NULL)
@@ -183,7 +200,7 @@ ngx_http_headers_filter(ngx_http_request_t *r)
         return ngx_http_next_header_filter(r);
     }
 
-    switch (r->headers_out.status) {
+    switch (r->headers_out.status) {        //根据响应状态码
 
     case NGX_HTTP_OK:
     case NGX_HTTP_CREATED:
@@ -209,7 +226,7 @@ ngx_http_headers_filter(ngx_http_request_t *r)
         }
     }
 
-    if (conf->headers) {
+    if (conf->headers) {    //add_header
         h = conf->headers->elts;
         for (i = 0; i < conf->headers->nelts; i++) {
 
@@ -217,17 +234,19 @@ ngx_http_headers_filter(ngx_http_request_t *r)
                 continue;
             }
 
+            //计算header值
             if (ngx_http_complex_value(r, &h[i].value, &value) != NGX_OK) {
                 return NGX_ERROR;
             }
 
+            //添加到r->headers_out中
             if (h[i].handler(r, &h[i], &value) != NGX_OK) {
                 return NGX_ERROR;
             }
         }
     }
 
-    if (conf->trailers) {
+    if (conf->trailers) {   //add_tailers
         h = conf->trailers->elts;
         for (i = 0; i < conf->trailers->nelts; i++) {
 
@@ -235,7 +254,7 @@ ngx_http_headers_filter(ngx_http_request_t *r)
                 continue;
             }
 
-            r->expect_trailers = 1;
+            r->expect_trailers = 1;     //标识有trailer_header需要发送
             break;
         }
     }
@@ -244,6 +263,9 @@ ngx_http_headers_filter(ngx_http_request_t *r)
 }
 
 
+/**
+ * body_filter， 处理trailer_header
+ */
 static ngx_int_t
 ngx_http_trailers_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -258,18 +280,20 @@ ngx_http_trailers_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     if (in == NULL
         || conf->trailers == NULL
-        || !r->expect_trailers
+        || !r->expect_trailers      //如果没有trailer_header需要发送，直接返回
         || r->header_only)
     {
         return ngx_http_next_body_filter(r, in);
     }
 
+    //找到最后一个buf
     for (cl = in; cl; cl = cl->next) {
         if (cl->buf->last_buf) {
             break;
         }
     }
 
+    //如果不是最后一个buf,直接返回
     if (cl == NULL) {
         return ngx_http_next_body_filter(r, in);
     }
@@ -301,10 +325,12 @@ ngx_http_trailers_filter(ngx_http_request_t *r, ngx_chain_t *in)
             continue;
         }
 
+        //计算变量值
         if (ngx_http_complex_value(r, &h[i].value, &value) != NGX_OK) {
             return NGX_ERROR;
         }
 
+        //添加到r->headers_out.trailers中
         if (value.len) {
             t = ngx_list_push(&r->headers_out.trailers);
             if (t == NULL) {
@@ -321,6 +347,9 @@ ngx_http_trailers_filter(ngx_http_request_t *r, ngx_chain_t *in)
 }
 
 
+/**
+ * expire缓存相关逻辑
+ */
 static ngx_int_t
 ngx_http_set_expires(ngx_http_request_t *r, ngx_http_headers_conf_t *conf)
 {
@@ -461,6 +490,9 @@ ngx_http_set_expires(ngx_http_request_t *r, ngx_http_headers_conf_t *conf)
 }
 
 
+/**
+ * 解析配置项 expires
+ */
 static ngx_int_t
 ngx_http_parse_expires(ngx_str_t *value, ngx_http_expires_t *expires,
     time_t *expires_time, char **err)
@@ -533,6 +565,9 @@ ngx_http_parse_expires(ngx_str_t *value, ngx_http_expires_t *expires,
 }
 
 
+/**
+ * 向响应头中添加header. header.key 为 hv.key， value为value
+ */
 static ngx_int_t
 ngx_http_add_header(ngx_http_request_t *r, ngx_http_header_val_t *hv,
     ngx_str_t *value)
@@ -637,6 +672,9 @@ ngx_http_set_response_header(ngx_http_request_t *r, ngx_http_header_val_t *hv,
 }
 
 
+/**
+ * 创建配置结构体
+ */
 static void *
 ngx_http_headers_create_conf(ngx_conf_t *cf)
 {
@@ -662,6 +700,9 @@ ngx_http_headers_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并配置
+ */
 static char *
 ngx_http_headers_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -690,6 +731,9 @@ ngx_http_headers_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 注册headers_filter和body_filter
+ */
 static ngx_int_t
 ngx_http_headers_filter_init(ngx_conf_t *cf)
 {
@@ -703,6 +747,16 @@ ngx_http_headers_filter_init(ngx_conf_t *cf)
 }
 
 
+/**
+ * 配置指令解析 $expires
+ * 
+ * https://nginx.org/en/docs/http/ngx_http_headers_module.html#expires
+ * 
+ * 	expires [modified] time;
+    expires epoch | max | off;
+ * 
+    time 可以包含变量
+ */
 static char *
 ngx_http_headers_expires(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -748,6 +802,7 @@ ngx_http_headers_expires(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //配置的是一个包含变量的脚本
     if (cv.lengths != NULL) {
 
         hcf->expires_value = ngx_palloc(cf->pool,
@@ -771,6 +826,12 @@ ngx_http_headers_expires(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 解析配置指令 add_header和add_trailer， 可以配置多个，支持变量
+ * https://nginx.org/en/docs/http/ngx_http_headers_module.html#add_header
+ * 
+ *  add_header name value [always];
+ */
 static char *
 ngx_http_headers_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -795,19 +856,21 @@ ngx_http_headers_add(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //在hcf->headers或hcf->trailers 动态数组中添加一项
     hv = ngx_array_push(*headers);
     if (hv == NULL) {
         return NGX_CONF_ERROR;
     }
 
-    hv->key = value[1];
+    hv->key = value[1];     //header key
     hv->handler = NULL;
     hv->offset = 0;
     hv->always = 0;
 
-    if (headers == &hcf->headers) {
-        hv->handler = ngx_http_add_header;
+    if (headers == &hcf->headers) {             //如果是 add_header指令
+        hv->handler = ngx_http_add_header;      //ngx_http_add_header 只是简单将header加入到r->headers_out中
 
+        //如果是几种预置的几个header, 有其特殊handler
         set = ngx_http_set_headers;
         for (i = 0; set[i].name.len; i++) {
             if (ngx_strcasecmp(value[1].data, set[i].name.data) != 0) {

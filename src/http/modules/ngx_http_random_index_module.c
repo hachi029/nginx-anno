@@ -9,7 +9,11 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-
+/**
+ * https://nginx.org/en/docs/http/ngx_http_random_index_module.html
+ *  处理以/结尾的请求，随机返回一个文件
+ * 一个content_handler
+ */
 typedef struct {
     ngx_flag_t  enable;
 } ngx_http_random_index_loc_conf_t;
@@ -83,16 +87,19 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
     ngx_array_t                        names;
     ngx_http_random_index_loc_conf_t  *rlcf;
 
+    // 只处理以/结尾的请求
     if (r->uri.data[r->uri.len - 1] != '/') {
         return NGX_DECLINED;
     }
 
+    // 只处理GET、HEAD、POST请求
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD|NGX_HTTP_POST))) {
         return NGX_DECLINED;
     }
 
     rlcf = ngx_http_get_module_loc_conf(r, ngx_http_random_index_module);
 
+    // 没有配置random_index
     if (!rlcf->enable) {
         return NGX_DECLINED;
     }
@@ -103,6 +110,7 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
     len = NGX_HTTP_RANDOM_INDEX_PREALLOCATE;
 #endif
 
+    //将请求url转换为文件路径
     last = ngx_http_map_uri_to_path(r, &path, &root, len);
     if (last == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -117,22 +125,22 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
                    "http random index: \"%s\"", path.data);
 
     if (ngx_open_dir(&path, &dir) == NGX_ERROR) {
-        err = ngx_errno;
+        err = ngx_errno;            //ngx_errno是一个全局变量，保存上次系统调用的错误码
 
         if (err == NGX_ENOENT
             || err == NGX_ENOTDIR
             || err == NGX_ENAMETOOLONG)
         {
             level = NGX_LOG_ERR;
-            rc = NGX_HTTP_NOT_FOUND;
+            rc = NGX_HTTP_NOT_FOUND;        //404
 
         } else if (err == NGX_EACCES) {
             level = NGX_LOG_ERR;
-            rc = NGX_HTTP_FORBIDDEN;
+            rc = NGX_HTTP_FORBIDDEN;        //403
 
         } else {
             level = NGX_LOG_CRIT;
-            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+            rc = NGX_HTTP_INTERNAL_SERVER_ERROR;        //500
         }
 
         ngx_log_error(level, r->connection->log, err,
@@ -141,7 +149,9 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
         return rc;
     }
 
+    //names是一个数组，保存目录下的文件名
     if (ngx_array_init(&names, r->pool, 32, sizeof(ngx_str_t)) != NGX_OK) {
+        //关闭目录，返回Internal Server Error
         return ngx_http_random_index_error(r, &dir, &path);
     }
 
@@ -151,7 +161,7 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
     for ( ;; ) {
         ngx_set_errno(0);
 
-        if (ngx_read_dir(&dir) == NGX_ERROR) {
+        if (ngx_read_dir(&dir) == NGX_ERROR) {      //读取目录
             err = ngx_errno;
 
             if (err != NGX_ENOMOREFILES) {
@@ -166,13 +176,13 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
         ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "http random index file: \"%s\"", ngx_de_name(&dir));
 
-        if (ngx_de_name(&dir)[0] == '.') {
+        if (ngx_de_name(&dir)[0] == '.') {      //directory entry
             continue;
         }
 
         len = ngx_de_namelen(&dir);
 
-        if (dir.type == 0 || ngx_de_is_link(&dir)) {
+        if (dir.type == 0 || ngx_de_is_link(&dir)) {    //
 
             /* 1 byte for '/' and 1 byte for terminating '\0' */
 
@@ -209,11 +219,11 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
             }
         }
 
-        if (!ngx_de_is_file(&dir)) {
+        if (!ngx_de_is_file(&dir)) {        //不是文件
             continue;
         }
 
-        name = ngx_array_push(&names);
+        name = ngx_array_push(&names);    //将文件名添加到names数组中  
         if (name == NULL) {
             return ngx_http_random_index_error(r, &dir, &path);
         }
@@ -228,7 +238,7 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
         ngx_memcpy(name->data, ngx_de_name(&dir), len);
     }
 
-    if (ngx_close_dir(&dir) == NGX_ERROR) {
+    if (ngx_close_dir(&dir) == NGX_ERROR) {     //关闭目录
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno,
                       ngx_close_dir_n " \"%V\" failed", &path);
     }
@@ -241,9 +251,9 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
 
     name = names.elts;
 
-    n = (ngx_uint_t) (((uint64_t) ngx_random() * n) / 0x80000000);
+    n = (ngx_uint_t) (((uint64_t) ngx_random() * n) / 0x80000000);    //随机文件名索引  
 
-    uri.len = r->uri.len + name[n].len;
+    uri.len = r->uri.len + name[n].len;     //n为文件名数组随机索引
 
     uri.data = ngx_pnalloc(r->pool, uri.len);
     if (uri.data == NULL) {
@@ -253,7 +263,7 @@ ngx_http_random_index_handler(ngx_http_request_t *r)
     last = ngx_copy(uri.data, r->uri.data, r->uri.len);
     ngx_memcpy(last, name[n].data, name[n].len);
 
-    return ngx_http_internal_redirect(r, &uri, &r->args);
+    return ngx_http_internal_redirect(r, &uri, &r->args);       //内部重定向，uri是随机文件名
 }
 
 

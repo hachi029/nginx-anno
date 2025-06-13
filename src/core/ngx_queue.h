@@ -15,6 +15,16 @@
 
 typedef struct ngx_queue_s  ngx_queue_t;
 
+/**
+ * 
+ * 双向链表
+ * 不负责分配内存来存放链表元素, 实现了排序功能
+ * 
+ * 非常轻量级，对每个用户数据而言，只需要增加两个指针的空间即可
+ * 
+ * 
+ * 对于链表中的每一个元素，其类型可以是任意的struct结构体，但这个结构体中必须要有一个ngx_queue_t类型的成员
+ */
 struct ngx_queue_s {
     ngx_queue_t  *prev;
     ngx_queue_t  *next;
@@ -102,7 +112,12 @@ struct ngx_queue_s {
     (h)->prev = (n)->prev;                                                    \
     (h)->prev->next = h;
 
-
+/**
+ * 返回q元素所属结构体的地址
+ * q: 当前节点
+ * type: 包含ngx_queue_t的数据节点类型定义
+ * link: ngx_queue_t类型的成员
+ */
 #define ngx_queue_data(q, type, link)                                         \
     (type *) ((u_char *) q - offsetof(type, link))
 

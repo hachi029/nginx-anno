@@ -234,6 +234,9 @@ ngx_syslog_parse_args(ngx_conf_t *cf, ngx_syslog_peer_t *peer)
 }
 
 
+/**
+ * 添加syslog头。 <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID
+ */
 u_char *
 ngx_syslog_add_header(ngx_syslog_peer_t *peer, u_char *buf)
 {

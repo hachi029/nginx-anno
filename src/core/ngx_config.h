@@ -48,14 +48,19 @@
 #define NGX_HAVE_SO_SNDLOWAT     1
 #endif
 
-
+// 非win32，即unix
 #if !(NGX_WIN32)
-
+// 拼接宏
 #define ngx_signal_helper(n)     SIG##n
 #define ngx_signal_value(n)      ngx_signal_helper(n)
 
+// 产生随机数
+// 种子在ngx_worker_process_init里初始化
+// srandom(((unsigned) ngx_pid << 16) ^ tp->sec ^ tp->msec);
 #define ngx_random               random
 
+
+// 重定义unix信号，名字更易读
 /* TODO: #ifndef */
 #define NGX_SHUTDOWN_SIGNAL      QUIT
 #define NGX_TERMINATE_SIGNAL     TERM
@@ -75,29 +80,43 @@
 
 #endif
 
-typedef intptr_t        ngx_int_t;
-typedef uintptr_t       ngx_uint_t;
-typedef intptr_t        ngx_flag_t;
+// nginx内部标准整数定义
+// ngx_rbtree_key_t = ngx_uint_t (ngx_rbtree.h)
+// ngx_rbtree_key_int_t = ngx_int_t(ngx_rbtree.h)
+// ngx_msec_t = ngx_rbtree_key_t = ngx_uint_t (ngx_time.h)
+// ngx_msec_int_t = ngx_rbtree_key_int_t ngx_int_t(ngx_time.h)
+typedef intptr_t        ngx_int_t;   //有符号整数
+typedef uintptr_t       ngx_uint_t;  //无符号整数
+typedef intptr_t        ngx_flag_t;  //相当于bool，标志量用
 
 
+// 整数的字符串形式长度
 #define NGX_INT32_LEN   (sizeof("-2147483648") - 1)
 #define NGX_INT64_LEN   (sizeof("-9223372036854775808") - 1)
 
+// 指针长度是4字节，32位cpu
 #if (NGX_PTR_SIZE == 4)
 #define NGX_INT_T_LEN   NGX_INT32_LEN
 #define NGX_MAX_INT_T_VALUE  2147483647
 
 #else
+// 指针长度是8字节，64位cpu
 #define NGX_INT_T_LEN   NGX_INT64_LEN
 #define NGX_MAX_INT_T_VALUE  9223372036854775807
 #endif
 
 
+// 分配内存时的字节对齐
+// 长整型，64位上是8字节
 #ifndef NGX_ALIGNMENT
 #define NGX_ALIGNMENT   sizeof(uintptr_t)    /* platform word */
 #endif
 
+
+// 计算字节对齐的宏
+// 上对齐到a的倍数，a是2的幂
 #define ngx_align(d, a)     (((d) + (a - 1)) & ~(a - 1))
+// 指针上对齐到a的倍数
 #define ngx_align_ptr(p, a)                                                   \
     (u_char *) (((uintptr_t) (p) + ((uintptr_t) a - 1)) & ~((uintptr_t) a - 1))
 
@@ -109,6 +128,9 @@ typedef intptr_t        ngx_flag_t;
 #define NGX_INVALID_ARRAY_INDEX 0x80000000
 
 
+// ngx_inline通常需要配合static使用
+// 在nginx unit里的定义是：
+// static inline __attribute__((always_inline))
 /* TODO: auto_conf: ngx_inline   inline __inline __inline__ */
 #ifndef ngx_inline
 #define ngx_inline      inline
