@@ -28,6 +28,7 @@ ngx_int_t ngx_event_no_timers_left(void);
 extern ngx_rbtree_t  ngx_event_timer_rbtree;
 
 
+/* 从定时器中移除事件 */
 static ngx_inline void
 ngx_event_del_timer(ngx_event_t *ev)
 {
@@ -35,6 +36,7 @@ ngx_event_del_timer(ngx_event_t *ev)
                    "event timer del: %d: %M",
                     ngx_event_ident(ev->data), ev->timer.key);
 
+    /* 从红黑树中移除指定事件的节点对象 */
     ngx_rbtree_delete(&ngx_event_timer_rbtree, &ev->timer);
 
 #if (NGX_DEBUG)
@@ -43,18 +45,22 @@ ngx_event_del_timer(ngx_event_t *ev)
     ev->timer.parent = NULL;
 #endif
 
+    /* 设置相应的标志位 */
     ev->timer_set = 0;
 }
 
 
+/* 将事件添加到定时器中 */
 static ngx_inline void
 ngx_event_add_timer(ngx_event_t *ev, ngx_msec_t timer)
 {
     ngx_msec_t      key;
     ngx_msec_int_t  diff;
 
+    /* 设置事件对象节点的键值 */
     key = ngx_current_msec + timer;
 
+     /* 判断事件的相应标志位 */
     if (ev->timer_set) {
 
         /*
@@ -81,8 +87,10 @@ ngx_event_add_timer(ngx_event_t *ev, ngx_msec_t timer)
                    "event timer add: %d: %M:%M",
                     ngx_event_ident(ev->data), timer, ev->timer.key);
 
+    /* 将事件对象节点插入到红黑树中 */
     ngx_rbtree_insert(&ngx_event_timer_rbtree, &ev->timer);
 
+    /* 设置标志位 */
     ev->timer_set = 1;
 }
 

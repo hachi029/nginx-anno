@@ -37,6 +37,12 @@
 #define NGX_HTTP_IMAGE_BUFFERED  0x08
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_image_filter_module.html
+ * 
+ * 
+ * is a filter that transforms images in JPEG, GIF, PNG, and WebP formats
+ */
 typedef struct {
     ngx_uint_t                   filter;
     ngx_uint_t                   width;

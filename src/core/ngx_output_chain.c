@@ -38,6 +38,17 @@ static ngx_int_t ngx_output_chain_get_buf(ngx_output_chain_ctx_t *ctx,
 static ngx_int_t ngx_output_chain_copy_buf(ngx_output_chain_ctx_t *ctx);
 
 
+/**
+ * 发送数据， in是待发送的链表
+ */
+/**
+ * 向上游服务器发送ngx_http_upstream_t结构体中的 request_bufs链表，
+ * 这个方法对于发送缓冲区构成的ngx_chain_t链表非常有用，它会把未发送完成的链表缓冲区保存下来，
+ * 这样就不用每次调用时都携带上request_bufs链表。怎么理解 呢？当第一次调用ngx_output_chain方法时，需要传递request_bufs链表构成的请求
+    如果ngx_output_chain一次无法发送完所有的request_bufs请求内容， 
+    ngx_output_chain_ctx_t类型的u->output会把未发送完的请求保存在自己的成员中，
+    同时返回 NGX_AGAIN。当可写事件再次触发，发送请求时就不需要再传递参数了  ngx_output_chain(&u->output, NULL);
+    */
 ngx_int_t
 ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
 {
@@ -45,6 +56,7 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
     ngx_int_t     rc, last;
     ngx_chain_t  *cl, *out, **last_out;
 
+    //当能直接确定所有的in chain都不需要复制的时
     if (ctx->in == NULL && ctx->busy == NULL
 #if (NGX_HAVE_FILE_AIO || NGX_THREADS)
         && !ctx->aio
@@ -67,13 +79,14 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
 #endif
             && ngx_output_chain_as_is(ctx, in->buf))
         {
-            return ctx->output_filter(ctx->filter_ctx, in);
+            return ctx->output_filter(ctx->filter_ctx, in);    //调用的是 ngx_http_next_body_filter  
         }
     }
 
     /* add the incoming buf to the chain ctx->in */
 
     if (in) {
+        //
         if (ngx_output_chain_add_copy(ctx->pool, &ctx->in, in) == NGX_ERROR) {
             return NGX_ERROR;
         }
@@ -100,6 +113,7 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
 
             bsize = ngx_buf_size(ctx->in->buf);
 
+            //如果buf的大小为0，并且不是特殊buf
             if (bsize == 0 && !ngx_buf_special(ctx->in->buf)) {
 
                 ngx_log_error(NGX_LOG_ALERT, ctx->pool->log, 0,
@@ -125,6 +139,7 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
                 continue;
             }
 
+            //如果buf的大小小于0，表示无效buf
             if (bsize < 0) {
 
                 ngx_log_error(NGX_LOG_ALERT, ctx->pool->log, 0,
@@ -145,6 +160,7 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
                 return NGX_ERROR;
             }
 
+            //如果不需要拷贝buf
             if (ngx_output_chain_as_is(ctx, ctx->in->buf)) {
 
                 /* move the chain link to the output chain */
@@ -159,6 +175,7 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
                 continue;
             }
 
+            //需要拷贝，如果ctx->buf为空，则分配空间
             if (ctx->buf == NULL) {
 
                 rc = ngx_output_chain_align_file_buf(ctx, bsize);
@@ -245,12 +262,16 @@ ngx_output_chain(ngx_output_chain_ctx_t *ctx, ngx_chain_t *in)
     }
 }
 
-
+/**
+ * 判断是否需要复制buf
+ * 返回1,表示不需要拷贝，否则为需要拷贝
+ */
 static ngx_inline ngx_int_t
 ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
 {
     ngx_uint_t  sendfile;
 
+    //是否为特殊buf（special buf），是的话返回1，也就是不用拷贝
     if (ngx_buf_special(buf)) {
         return 1;
     }
@@ -265,7 +286,7 @@ ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
     sendfile = ctx->sendfile;
 
 #if (NGX_SENDFILE_LIMIT)
-
+    /* 如果pos大于sendfile的限制，设置标记为0 */
     if (buf->in_file && buf->file_pos >= NGX_SENDFILE_LIMIT) {
         sendfile = 0;
     }
@@ -279,6 +300,7 @@ ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
      * is available.
      */
 
+    //如果buf在文件中，并且使用了directio的话，需要拷贝buf
     if (buf->in_file && buf->file->directio) {
         sendfile = 0;
     }
@@ -286,7 +308,7 @@ ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
 #endif
 
     if (!sendfile) {
-
+        //如果不走sendfile，而且buf不在内存中，则需要复制到内存一份
         if (!ngx_buf_in_memory(buf)) {
             return 0;
         }
@@ -294,10 +316,12 @@ ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
         buf->in_file = 0;
     }
 
+    //如果需要内存中有一份拷贝，而并不在内存中，此时返回0，表示需要拷贝
     if (ctx->need_in_memory && !ngx_buf_in_memory(buf)) {
         return 0;
     }
 
+    //如果需要内存中有可修改的拷贝，并且buf存在于只读的内存中或者mmap中，则返回0
     if (ctx->need_in_temp && (buf->memory || buf->mmap)) {
         return 0;
     }
@@ -305,10 +329,16 @@ ngx_output_chain_as_is(ngx_output_chain_ctx_t *ctx, ngx_buf_t *buf)
     return 1;
 }
 
-
+/**
+ * 将in链表中的buf拷贝到chain链表中
+ * 1. 如果buf在文件中，并且文件的pos大于sendfile的限制，设置标记为0
+ * 2. 如果buf在内存中，并且使用了directio的话，需要拷贝buf
+ * 3. 如果buf在内存中，并且需要内存中有一份拷贝，而并不在内存中，此时返回0，表示需要拷贝
+ * 4. 如果buf在内存中，并且需要内存中有可修改的拷贝，并且buf存在于只读的内存中或者mmap中，则返回0
+ */
 static ngx_int_t
 ngx_output_chain_add_copy(ngx_pool_t *pool, ngx_chain_t **chain,
-    ngx_chain_t *in)
+    ngx_chain_t *in)    
 {
     ngx_chain_t  *cl, **ll;
 #if (NGX_SENDFILE_LIMIT)
@@ -317,6 +347,7 @@ ngx_output_chain_add_copy(ngx_pool_t *pool, ngx_chain_t **chain,
 
     ll = chain;
 
+    // ll 指向最后一个节点的地址
     for (cl = *chain; cl; cl = cl->next) {
         ll = &cl->next;
     }
@@ -383,6 +414,7 @@ ngx_output_chain_align_file_buf(ngx_output_chain_ctx_t *ctx, off_t bsize)
 
     in = ctx->in->buf;
 
+    //buf不在文件或不是directio，则返回
     if (in->file == NULL || !in->file->directio) {
         return NGX_DECLINED;
     }

@@ -14,6 +14,14 @@
 #endif
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_ssl_module.html
+ * 
+ * provides the necessary support for HTTPS
+ * 
+ * 非默认启用，依赖OpenSSL library
+ * 
+ */
 typedef ngx_int_t (*ngx_ssl_variable_handler_pt)(ngx_connection_t *c,
     ngx_pool_t *pool, ngx_str_t *s);
 

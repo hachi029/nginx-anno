@@ -13,8 +13,16 @@
 #include <ngx_core.h>
 
 
+// 重定义unix的错误码类型
 typedef int               ngx_err_t;
 
+// 重定义unix错误码
+// 较重要的有：
+// NGX_EINTR，发生系统中断
+// NGX_ENFILE/NGX_EMFILE，系统文件描述符不足
+// NGX_EINPROGRESS，发起上游连接，但还没有连接成功，之后调用get option来检测是否成功
+// NGX_ETIMEDOUT，超时错误
+// NGX_EAGAIN，非阻塞调用专用错误码，未准备好，需重试
 #define NGX_EPERM         EPERM
 #define NGX_ENOENT        ENOENT
 #define NGX_ENOPATH       ENOENT
@@ -67,8 +75,10 @@ typedef int               ngx_err_t;
 #endif
 
 
+// 重命名错误码errno，更清楚
 #define ngx_errno                  errno
 #define ngx_socket_errno           errno
+// 设置错误码的操作
 #define ngx_set_errno(err)         errno = err
 #define ngx_set_socket_errno(err)  errno = err
 

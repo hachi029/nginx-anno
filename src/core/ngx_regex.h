@@ -36,16 +36,19 @@ typedef struct {
 #endif
 
 
-#define NGX_REGEX_CASELESS     0x00000001
+#define NGX_REGEX_CASELESS     0x00000001       //正则忽略大小写
 #define NGX_REGEX_MULTILINE    0x00000002
 
 
+/**
+ * 正则表达式编译时的传参，参考 ngx_http_regex_compile
+ */
 typedef struct {
-    ngx_str_t     pattern;
+    ngx_str_t     pattern;      //原始正则表达式
     ngx_pool_t   *pool;
-    ngx_uint_t    options;
+    ngx_uint_t    options;      //编译选项，如 NGX_REGEX_CASELESS
 
-    ngx_regex_t  *regex;
+    ngx_regex_t  *regex;        //编译结果
     int           captures;
     int           named_captures;
     int           name_size;
@@ -55,12 +58,15 @@ typedef struct {
 
 
 typedef struct {
-    ngx_regex_t  *regex;
-    u_char       *name;
+    ngx_regex_t  *regex;        //调用ngx_regex_compile后的编译结果. ngx_regex_compile_t->regex
+    u_char       *name;         //原始正则字符串
 } ngx_regex_elt_t;
 
 
 void ngx_regex_init(void);
+/**
+ * 编译一个正则表达式，编译结果为 rc->regex
+ */
 ngx_int_t ngx_regex_compile(ngx_regex_compile_t *rc);
 
 ngx_int_t ngx_regex_exec(ngx_regex_t *re, ngx_str_t *s, int *captures,

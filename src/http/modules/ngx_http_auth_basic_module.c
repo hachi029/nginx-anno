@@ -13,7 +13,10 @@
 
 #define NGX_HTTP_AUTH_BUF_SIZE  2048
 
-
+/**
+ * https://nginx.org/en/docs/http/ngx_http_auth_basic_module.html
+ * auth_basic
+ */
 typedef struct {
     ngx_http_complex_value_t  *realm;
     ngx_http_complex_value_t  *user_file;
@@ -98,24 +101,24 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
     ngx_uint_t                       i, level, login, left, passwd;
     ngx_file_t                       file;
     ngx_http_auth_basic_loc_conf_t  *alcf;
-    u_char                           buf[NGX_HTTP_AUTH_BUF_SIZE];
+    u_char                           buf[NGX_HTTP_AUTH_BUF_SIZE]; //2K
     enum {
         sw_login,
         sw_passwd,
         sw_skip
     } state;
 
-    alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_basic_module);
+    alcf = ngx_http_get_module_loc_conf(r, ngx_http_auth_basic_module); //获取模块配置
 
-    if (alcf->realm == NULL || alcf->user_file == NULL) {
+    if (alcf->realm == NULL || alcf->user_file == NULL) {   //未开启
         return NGX_DECLINED;
     }
 
     if (ngx_http_complex_value(r, alcf->realm, &realm) != NGX_OK) {
         return NGX_ERROR;
-    }
+    }   
 
-    if (realm.len == 3 && ngx_strncmp(realm.data, "off", 3) == 0) {
+    if (realm.len == 3 && ngx_strncmp(realm.data, "off", 3) == 0) {     //未开启
         return NGX_DECLINED;
     }
 
@@ -126,6 +129,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                       "no user/password was provided for basic authentication");
 
+        //返回401，并设置www_authenticate响应头
         return ngx_http_auth_basic_set_realm(r, &realm);
     }
 
@@ -137,6 +141,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    //user_file指定了包含用户名密码的文件 
     fd = ngx_open_file(user_file.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
 
     if (fd == NGX_INVALID_FILE) {
@@ -166,7 +171,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
     state = sw_login;
     passwd = 0;
     login = 0;
-    left = 0;
+    left = 0;   //left切分了buf缓冲区，左侧为已读取的内容，右侧为可用空间
     offset = 0;
 
     for ( ;; ) {
@@ -184,13 +189,15 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
             break;
         }
 
+        //n 为本次读取的字节数
         for (i = left; i < left + n; i++) {
             switch (state) {
 
-            case sw_login:
-                if (login == 0) {
+            //状态机解析文件，格式为 name2:password2:comment
+            case sw_login:      //查找用户名
+                if (login == 0) {   //当前行首个字符
 
-                    if (buf[i] == '#' || buf[i] == CR) {
+                    if (buf[i] == '#' || buf[i] == CR) {    //注释或换行
                         state = sw_skip;
                         break;
                     }
@@ -200,26 +207,26 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
                     }
                 }
 
-                if (buf[i] != r->headers_in.user.data[login]) {
-                    state = sw_skip;
+                if (buf[i] != r->headers_in.user.data[login]) { //逐个字符比较用户名
+                    state = sw_skip;                            //sw_skip表示跳过当前行
                     break;
                 }
 
-                if (login == r->headers_in.user.len) {
+                if (login == r->headers_in.user.len) {      //用户名相等，开始比较password
                     state = sw_passwd;
-                    passwd = i + 1;
+                    passwd = i + 1;                         //记录密码开始的位置
                 }
 
                 login++;
 
                 break;
 
-            case sw_passwd:
+            case sw_passwd:     //开始比较密码
                 if (buf[i] == LF || buf[i] == CR || buf[i] == ':') {
                     buf[i] = '\0';
 
-                    pwd.len = i - passwd;
-                    pwd.data = &buf[passwd];
+                    pwd.len = i - passwd;               //passwd~i 之间的为密码
+                    pwd.data = &buf[passwd];            //pwd.data指向密码开始的位置
 
                     rc = ngx_http_auth_basic_crypt_handler(r, &pwd, &realm);
                     goto cleanup;
@@ -227,7 +234,7 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
 
                 break;
 
-            case sw_skip:
+            case sw_skip:       //跳过当前行
                 if (buf[i] == LF) {
                     state = sw_login;
                     login = 0;
@@ -270,17 +277,20 @@ ngx_http_auth_basic_handler(ngx_http_request_t *r)
 
 cleanup:
 
-    if (ngx_close_file(file.fd) == NGX_FILE_ERROR) {
+    if (ngx_close_file(file.fd) == NGX_FILE_ERROR) {        //关闭file
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, ngx_errno,
                       ngx_close_file_n " \"%s\" failed", user_file.data);
     }
 
-    ngx_explicit_memzero(buf, NGX_HTTP_AUTH_BUF_SIZE);
+    ngx_explicit_memzero(buf, NGX_HTTP_AUTH_BUF_SIZE);      //清空密码
 
     return rc;
 }
 
-
+/**
+ * 对请求header中的密文进行加密，然后比较是否和入参passwd相等。
+ * 如果相等，校验通过；不相等，则返回401
+ */
 static ngx_int_t
 ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
     ngx_str_t *realm)
@@ -288,6 +298,7 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
     ngx_int_t   rc;
     u_char     *encrypted;
 
+    //对用户的密码加密
     rc = ngx_crypt(r->pool, r->headers_in.passwd.data, passwd->data,
                    &encrypted);
 
@@ -299,6 +310,7 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    //比较密文是否相等
     if (ngx_strcmp(encrypted, passwd->data) == 0) {
         return NGX_OK;
     }
@@ -310,16 +322,20 @@ ngx_http_auth_basic_crypt_handler(ngx_http_request_t *r, ngx_str_t *passwd,
                   "user \"%V\": password mismatch",
                   &r->headers_in.user);
 
+    //密码校验失败
     return ngx_http_auth_basic_set_realm(r, realm);
 }
 
-
+/**
+ * 设置WWW-Authenticate: Basic realm=$realm, 然后返回401
+ */
 static ngx_int_t
 ngx_http_auth_basic_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
 {
     size_t   len;
     u_char  *basic, *p;
 
+    //增加一个响应头
     r->headers_out.www_authenticate = ngx_list_push(&r->headers_out.headers);
     if (r->headers_out.www_authenticate == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -347,7 +363,7 @@ ngx_http_auth_basic_set_realm(ngx_http_request_t *r, ngx_str_t *realm)
     return NGX_HTTP_UNAUTHORIZED;
 }
 
-
+//创建loc级别配置结构体
 static void *
 ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf)
 {
@@ -364,7 +380,7 @@ ngx_http_auth_basic_create_loc_conf(ngx_conf_t *cf)
     return conf;
 }
 
-
+//合并oc级别配置结构体
 static char *
 ngx_http_auth_basic_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -386,17 +402,18 @@ ngx_http_auth_basic_init(ngx_conf_t *cf)
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_core_module);
 
+    //NGX_HTTP_ACCESS_PHASE阶段
     h = ngx_array_push(&cmcf->phases[NGX_HTTP_ACCESS_PHASE].handlers);
     if (h == NULL) {
         return NGX_ERROR;
     }
 
-    *h = ngx_http_auth_basic_handler;
+    *h = ngx_http_auth_basic_handler;   //handler
 
     return NGX_OK;
 }
 
-
+//auth_basic_user_file命令的handler。
 static char *
 ngx_http_auth_basic_user_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -405,10 +422,11 @@ ngx_http_auth_basic_user_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_str_t                         *value;
     ngx_http_compile_complex_value_t   ccv;
 
-    if (alcf->user_file != NGX_CONF_UNSET_PTR) {
+    if (alcf->user_file != NGX_CONF_UNSET_PTR) {    //避免重复执行
         return "is duplicate";
     }
 
+    //auth_basic_user_file file; file可以包含变量
     alcf->user_file = ngx_palloc(cf->pool, sizeof(ngx_http_complex_value_t));
     if (alcf->user_file == NULL) {
         return NGX_CONF_ERROR;
@@ -419,7 +437,7 @@ ngx_http_auth_basic_user_file(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
 
     ccv.cf = cf;
-    ccv.value = &value[1];
+    ccv.value = &value[1];  //只有一个参数
     ccv.complex_value = alcf->user_file;
     ccv.zero = 1;
     ccv.conf_prefix = 1;

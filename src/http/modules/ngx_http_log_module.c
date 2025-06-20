@@ -14,6 +14,10 @@
 #endif
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_log_module.html
+ * 记录访问日志模块
+ */
 typedef struct ngx_http_log_op_s  ngx_http_log_op_t;
 
 typedef u_char *(*ngx_http_log_op_run_pt) (ngx_http_request_t *r, u_char *buf,
@@ -23,35 +27,49 @@ typedef size_t (*ngx_http_log_op_getlen_pt) (ngx_http_request_t *r,
     uintptr_t data);
 
 
+/**
+ * 表示log_format配置指令中的一个变量 $xxx
+ */
 struct ngx_http_log_op_s {
-    size_t                      len;
-    ngx_http_log_op_getlen_pt   getlen;
-    ngx_http_log_op_run_pt      run;
-    uintptr_t                   data;
+    size_t                      len;        //变量名称长度
+    ngx_http_log_op_getlen_pt   getlen;     //获取变量值的长度
+    ngx_http_log_op_run_pt      run;        //获取变量值的handler
+    uintptr_t                   data;      //如果为预置变量， data为0，否则为 变量索引index ;还可能是预分配的存放变量值的内存空间
 };
 
 
+//表示一种日志格式
 typedef struct {
-    ngx_str_t                   name;
-    ngx_array_t                *flushes;
+    ngx_str_t                   name;   //日志格式名称
+    //日志格式中使用的变量的索引
+    ngx_array_t                *flushes; //元素类型为ngx_int_t, 指向ngx_http_log_op_t 的data
+    //每个元素代表一个日志格式中的变量
     ngx_array_t                *ops;        /* array of ngx_http_log_op_t */
 } ngx_http_log_fmt_t;
 
 
-typedef struct {
+/**
+ * 本模块main级别的配置结构体
+ */
+typedef struct { 
+    //通过log_format指令配置的多种日志格式, 元素类型为ngx_http_log_fmt_t
     ngx_array_t                 formats;    /* array of ngx_http_log_fmt_t */
+    //标识使用的是默认预置的combined格式
     ngx_uint_t                  combined_used; /* unsigned  combined_used:1 */
 } ngx_http_log_main_conf_t;
 
 
+/**
+ * 表示日志输出的buf缓冲区
+ */
 typedef struct {
     u_char                     *start;
     u_char                     *pos;
     u_char                     *last;
 
-    ngx_event_t                *event;
-    ngx_msec_t                  flush;
-    ngx_int_t                   gzip;
+    ngx_event_t                *event;      //定时flush事件
+    ngx_msec_t                  flush;      //定时时间interval
+    ngx_int_t                   gzip;       //gzip level
 } ngx_http_log_buf_t;
 
 
@@ -61,24 +79,34 @@ typedef struct {
 } ngx_http_log_script_t;
 
 
+/**
+ * 表示一个日志输出配置 access_log
+ */
 typedef struct {
-    ngx_open_file_t            *file;
-    ngx_http_log_script_t      *script;
-    time_t                      disk_full_time;
-    time_t                      error_log_time;
-    ngx_syslog_peer_t          *syslog_peer;
+    ngx_open_file_t            *file;               //输出的文件
+    ngx_http_log_script_t      *script;             //包含变量的文件名，需要在运行时才能获取真实的文件名
+    time_t                      disk_full_time;     //日志磁盘满时间
+    time_t                      error_log_time;     //上次记录写入日志错误的事件，用于避免频繁向错误日志输出错误信息。（每隔60秒记录一次）
+    ngx_syslog_peer_t          *syslog_peer;        //用于向syslog输出日志
     ngx_http_log_fmt_t         *format;
-    ngx_http_complex_value_t   *filter;
+    ngx_http_complex_value_t   *filter;             //[if=condition]], 日志过滤条件
 } ngx_http_log_t;
 
 
+/**
+ * 本模块loc级别配置
+ * 
+ * https://nginx.org/en/docs/http/ngx_http_log_module.html#open_log_file_cache
+ */
 typedef struct {
+    //当前级别(main|srv|loc)配置的多个access_log.  元素类型 ngx_http_log_t
     ngx_array_t                *logs;       /* array of ngx_http_log_t */
 
-    ngx_open_file_cache_t      *open_file_cache;
-    time_t                      open_file_cache_valid;
-    ngx_uint_t                  open_file_cache_min_uses;
+    ngx_open_file_cache_t      *open_file_cache;        //本模块定义的打开文件缓存区。为null表示关闭缓冲区
+    time_t                      open_file_cache_valid;  // 设置要检查文件是否存在的事件间隔，默认60秒
+    ngx_uint_t                  open_file_cache_min_uses; //在inactive时间内，文件至少被使用多少次才被认为活跃而不从缓存区中移除
 
+    //关闭日志输出
     ngx_uint_t                  off;        /* unsigned  off:1 */
 } ngx_http_log_loc_conf_t;
 
@@ -230,6 +258,9 @@ static ngx_str_t  ngx_http_combined_fmt =
                "\"$http_referer\" \"$http_user_agent\"");
 
 
+/**
+ * 本模块提供的变量,（并没有注册到全局变量，只是在打印日志时，可以快速获取值） 
+ */
 static ngx_http_log_var_t  ngx_http_log_vars[] = {
     { ngx_string("pipe"), 1, ngx_http_log_pipe },
     { ngx_string("time_local"), sizeof("28/Sep/1970:12:00:00 +0600") - 1,
@@ -250,6 +281,9 @@ static ngx_http_log_var_t  ngx_http_log_vars[] = {
 };
 
 
+/**
+ * LOG_PHASE handler
+ */
 static ngx_int_t
 ngx_http_log_handler(ngx_http_request_t *r)
 {
@@ -268,23 +302,27 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
     lcf = ngx_http_get_module_loc_conf(r, ngx_http_log_module);
 
+    //关闭日志输出
     if (lcf->off) {
         return NGX_OK;
     }
 
     log = lcf->logs->elts;
+    //遍历每个日志输出配置
     for (l = 0; l < lcf->logs->nelts; l++) {
 
-        if (log[l].filter) {
+        if (log[l].filter) {        //执行if condition
             if (ngx_http_complex_value(r, log[l].filter, &val) != NGX_OK) {
                 return NGX_ERROR;
             }
 
+            //如果值为0，则不输出
             if (val.len == 0 || (val.len == 1 && val.data[0] == '0')) {
                 continue;
             }
         }
 
+        //如果日志所在磁盘已满
         if (ngx_time() == log[l].disk_full_time) {
 
             /*
@@ -296,9 +334,10 @@ ngx_http_log_handler(ngx_http_request_t *r)
             continue;
         }
 
+        //强制重新解析no_cacheable的变量
         ngx_http_script_flush_no_cacheable_variables(r, log[l].format->flushes);
 
-        len = 0;
+        len = 0;    //计算日志中每个变量值长度
         op = log[l].format->ops->elts;
         for (i = 0; i < log[l].format->ops->nelts; i++) {
             if (op[i].len == 0) {
@@ -309,6 +348,7 @@ ngx_http_log_handler(ngx_http_request_t *r)
             }
         }
 
+        //如果是输出到syslog
         if (log[l].syslog_peer) {
 
             /* length of syslog's PRI and HEADER message parts */
@@ -323,42 +363,53 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         buffer = log[l].file ? log[l].file->data : NULL;
 
+        //日志输出缓冲区
         if (buffer) {
 
+            //如果缓冲区中剩余空间不足，则将缓冲区中数据flush到文件
             if (len > (size_t) (buffer->last - buffer->pos)) {
 
                 ngx_http_log_write(r, &log[l], buffer->start,
                                    buffer->pos - buffer->start);
 
+                //清空缓冲区
                 buffer->pos = buffer->start;
             }
 
+            //日志能存入buffer
             if (len <= (size_t) (buffer->last - buffer->pos)) {
 
                 p = buffer->pos;
 
+                //如果当前缓冲区是空的 且配置了 定时flush
                 if (buffer->event && p == buffer->start) {
-                    ngx_add_timer(buffer->event, buffer->flush);
+                    ngx_add_timer(buffer->event, buffer->flush);    //添加一个定时器
                 }
 
+                //将日志内存赋值到缓冲区
                 for (i = 0; i < log[l].format->ops->nelts; i++) {
                     p = op[i].run(r, p, &op[i]);
                 }
 
+                //增加换行符
                 ngx_linefeed(p);
 
+                //更新缓冲区位置指针
                 buffer->pos = p;
 
                 continue;
             }
 
+            //移除定时器
             if (buffer->event && buffer->event->timer_set) {
                 ngx_del_timer(buffer->event);
             }
         }
 
+        //不经buffer,将日志直接写入文件
     alloc_line:
 
+        //申请内存
         line = ngx_pnalloc(r->pool, len);
         if (line == NULL) {
             return NGX_ERROR;
@@ -366,14 +417,17 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         p = line;
 
+        //添加syslog日志头
         if (log[l].syslog_peer) {
             p = ngx_syslog_add_header(log[l].syslog_peer, line);
         }
 
+        //构建日志
         for (i = 0; i < log[l].format->ops->nelts; i++) {
             p = op[i].run(r, p, &op[i]);
         }
 
+        //发送至syslog
         if (log[l].syslog_peer) {
 
             size = p - line;
@@ -395,6 +449,7 @@ ngx_http_log_handler(ngx_http_request_t *r)
 
         ngx_linefeed(p);
 
+        //发送至文件
         ngx_http_log_write(r, &log[l], line, p - line);
     }
 
@@ -402,6 +457,11 @@ ngx_http_log_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * 
+ * 将buf指向的长度为len的数据输出到文件
+ * 
+ */
 static void
 ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     size_t len)
@@ -414,7 +474,7 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     ngx_http_log_buf_t  *buffer;
 #endif
 
-    if (log->script == NULL) {
+    if (log->script == NULL) {  //日志路径中不包含参数的场景
         name = log->file->name.data;
 
 #if (NGX_ZLIB)
@@ -430,11 +490,12 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
         n = ngx_write_fd(log->file->fd, buf, len);
 #endif
 
-    } else {
+    } else {        //日志路径中包含参数的场景
         name = NULL;
         n = ngx_http_log_script_write(r, log->script, &name, buf, len);
     }
 
+    //完全写入
     if (n == (ssize_t) len) {
         return;
     }
@@ -442,6 +503,7 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
     now = ngx_time();
 
     if (n == -1) {
+        //写入失败
         err = ngx_errno;
 
         if (err == NGX_ENOSPC) {
@@ -458,16 +520,20 @@ ngx_http_log_write(ngx_http_request_t *r, ngx_http_log_t *log, u_char *buf,
         return;
     }
 
+    //未完全写入，记录错误日志
     if (now - log->error_log_time > 59) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       ngx_write_fd_n " to \"%s\" was incomplete: %z of %uz",
                       name, n, len);
 
-        log->error_log_time = now;
+        log->error_log_time = now;  //更新打错误日志的时间，避免频繁记录错误日志
     }
 }
 
 
+/**
+ * 将buf指向的长度为len的数据输出到文件, 专用于日志路径中包含参数的场景
+ */
 static ssize_t
 ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
     u_char **name, u_char *buf, size_t len)
@@ -583,6 +649,9 @@ ngx_http_log_script_write(ngx_http_request_t *r, ngx_http_log_script_t *script,
 
 #if (NGX_ZLIB)
 
+/**
+ * 缓存中数据压缩后写入文件
+ */
 static ssize_t
 ngx_http_log_gzip(ngx_fd_t fd, u_char *buf, size_t len, ngx_int_t level,
     ngx_log_t *log)
@@ -715,6 +784,10 @@ ngx_http_log_gzip_free(void *opaque, void *address)
 #endif
 
 
+/**
+ * 将file->data代表的日志输出缓冲区中的日志flush输出
+ * 
+ */
 static void
 ngx_http_log_flush(ngx_open_file_t *file, ngx_log_t *log)
 {
@@ -724,6 +797,7 @@ ngx_http_log_flush(ngx_open_file_t *file, ngx_log_t *log)
 
     buffer = file->data;
 
+    //有效数据长度
     len = buffer->pos - buffer->start;
 
     if (len == 0) {
@@ -732,8 +806,10 @@ ngx_http_log_flush(ngx_open_file_t *file, ngx_log_t *log)
 
 #if (NGX_ZLIB)
     if (buffer->gzip) {
+        //压缩输出
         n = ngx_http_log_gzip(file->fd, buffer->start, len, buffer->gzip, log);
     } else {
+        //直接输出
         n = ngx_write_fd(file->fd, buffer->start, len);
     }
 #else
@@ -751,14 +827,20 @@ ngx_http_log_flush(ngx_open_file_t *file, ngx_log_t *log)
                       file->name.data, n, len);
     }
 
+    //重置buffer
     buffer->pos = buffer->start;
 
+    //如果有定时器事件，将定时器事件移除
     if (buffer->event && buffer->event->timer_set) {
         ngx_del_timer(buffer->event);
     }
 }
 
 
+/**
+ * 定时flush事件触发handler 
+ * buffer->event->handler = ngx_http_log_flush_handler;
+ */
 static void
 ngx_http_log_flush_handler(ngx_event_t *ev)
 {
@@ -769,6 +851,11 @@ ngx_http_log_flush_handler(ngx_event_t *ev)
 }
 
 
+/**
+ * 拷贝小于一个指针长度的数据
+ * op->data作为数据
+ * 将op->data指针本身作为数据输出
+ */
 static u_char *
 ngx_http_log_copy_short(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -788,6 +875,10 @@ ngx_http_log_copy_short(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * op->data作为指针
+ * 拷贝op->data指向的内存空间
+ */
 static u_char *
 ngx_http_log_copy_long(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -796,6 +887,9 @@ ngx_http_log_copy_long(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * $pipe get_handler
+ */
 static u_char *
 ngx_http_log_pipe(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -809,6 +903,9 @@ ngx_http_log_pipe(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 }
 
 
+/**
+ * $time_local get_handler
+ */
 static u_char *
 ngx_http_log_time(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -816,6 +913,9 @@ ngx_http_log_time(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
                       ngx_cached_http_log_time.len);
 }
 
+/**
+ * $time_iso8601 get_handler
+ */
 static u_char *
 ngx_http_log_iso8601(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -823,6 +923,9 @@ ngx_http_log_iso8601(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
                       ngx_cached_http_log_iso8601.len);
 }
 
+/**
+ * $msec get_handler
+ */
 static u_char *
 ngx_http_log_msec(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -834,6 +937,9 @@ ngx_http_log_msec(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 }
 
 
+/**
+ * $request_time get_handler
+ */
 static u_char *
 ngx_http_log_request_time(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -851,6 +957,9 @@ ngx_http_log_request_time(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * $status get_handler
+ */
 static u_char *
 ngx_http_log_status(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -873,6 +982,9 @@ ngx_http_log_status(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 }
 
 
+/**
+ * $bytes_sent get_handler
+ */
 static u_char *
 ngx_http_log_bytes_sent(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -886,6 +998,9 @@ ngx_http_log_bytes_sent(ngx_http_request_t *r, u_char *buf,
  * this log operation code function is more optimized for logging
  */
 
+ /**
+  * $body_bytes_sent get_handler
+  */
 static u_char *
 ngx_http_log_body_bytes_sent(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -904,6 +1019,9 @@ ngx_http_log_body_bytes_sent(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * $request_length get_handler
+ */
 static u_char *
 ngx_http_log_request_length(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -912,12 +1030,16 @@ ngx_http_log_request_length(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * 编译log_format配置指令中的变量
+ */
 static ngx_int_t
 ngx_http_log_variable_compile(ngx_conf_t *cf, ngx_http_log_op_t *op,
     ngx_str_t *value, ngx_uint_t escape)
 {
     ngx_int_t  index;
 
+    //获取变量的index。如果变量没被索引，会创建新的加入到索引变量动态数组中。
     index = ngx_http_get_variable_index(cf, value);
     if (index == NGX_ERROR) {
         return NGX_ERROR;
@@ -925,6 +1047,9 @@ ngx_http_log_variable_compile(ngx_conf_t *cf, ngx_http_log_op_t *op,
 
     op->len = 0;
 
+    /**
+     * 不同的escape, 有不同的获取变量值长度和变量值的方法
+     */
     switch (escape) {
     case NGX_HTTP_LOG_ESCAPE_JSON:
         op->getlen = ngx_http_log_json_variable_getlen;
@@ -947,6 +1072,9 @@ ngx_http_log_variable_compile(ngx_conf_t *cf, ngx_http_log_op_t *op,
 }
 
 
+/**
+ * 获取索引变量值的长度
+ */
 static size_t
 ngx_http_log_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 {
@@ -967,6 +1095,9 @@ ngx_http_log_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 }
 
 
+/**
+ * 获取索引变量值
+ */
 static u_char *
 ngx_http_log_variable(ngx_http_request_t *r, u_char *buf, ngx_http_log_op_t *op)
 {
@@ -1048,6 +1179,9 @@ ngx_http_log_escape(u_char *dst, u_char *src, size_t size)
 }
 
 
+/**
+ * json格式的日志获取变量值长度函数
+ */
 static size_t
 ngx_http_log_json_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 {
@@ -1068,6 +1202,9 @@ ngx_http_log_json_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 }
 
 
+/**
+ * json格式的日志获取变量值
+ */
 static u_char *
 ngx_http_log_json_variable(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -1089,6 +1226,9 @@ ngx_http_log_json_variable(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * 原始格式的日志获取变量值长度
+ */
 static size_t
 ngx_http_log_unescaped_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 {
@@ -1106,6 +1246,9 @@ ngx_http_log_unescaped_variable_getlen(ngx_http_request_t *r, uintptr_t data)
 }
 
 
+/**
+ * 原始格式的日志获取变量值
+ */
 static u_char *
 ngx_http_log_unescaped_variable(ngx_http_request_t *r, u_char *buf,
     ngx_http_log_op_t *op)
@@ -1122,6 +1265,9 @@ ngx_http_log_unescaped_variable(ngx_http_request_t *r, u_char *buf,
 }
 
 
+/**
+ * 创建main级别配置结构体
+ */
 static void *
 ngx_http_log_create_main_conf(ngx_conf_t *cf)
 {
@@ -1158,6 +1304,9 @@ ngx_http_log_create_main_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 创建loc级别配置结构体
+ */
 static void *
 ngx_http_log_create_loc_conf(ngx_conf_t *cf)
 {
@@ -1174,6 +1323,9 @@ ngx_http_log_create_loc_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并loc级别配置结构体
+ */
 static char *
 ngx_http_log_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -1234,6 +1386,13 @@ ngx_http_log_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 解析配置指令access_log
+ * 
+ * 	access_log path [format [buffer=size] [gzip[=level]] [flush=time] [if=condition]];
+    access_log off;
+ * Default:	access_log logs/access.log combined;
+ */
 static char *
 ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -1254,6 +1413,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    //access_log off; 关闭当前级别日志打印
     if (ngx_strcmp(value[1].data, "off") == 0) {
         llcf->off = 1;
         if (cf->args->nelts == 2) {
@@ -1265,6 +1425,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //一个loc下可以有多个 access_log 配置
     if (llcf->logs == NULL) {
         llcf->logs = ngx_array_create(cf->pool, 2, sizeof(ngx_http_log_t));
         if (llcf->logs == NULL) {
@@ -1272,8 +1433,10 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //本模块main级别配置
     lmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_log_module);
 
+    //ngx_http_log_t
     log = ngx_array_push(llcf->logs);
     if (log == NULL) {
         return NGX_CONF_ERROR;
@@ -1282,6 +1445,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_memzero(log, sizeof(ngx_http_log_t));
 
 
+    //syslog:前缀， Logging to syslog
     if (ngx_strncmp(value[1].data, "syslog:", 7) == 0) {
 
         peer = ngx_pcalloc(cf->pool, sizeof(ngx_syslog_peer_t));
@@ -1298,15 +1462,17 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         goto process_formats;
     }
 
+    //value[1] 为日志文件path
     n = ngx_http_script_variables_count(&value[1]);
 
-    if (n == 0) {
+    if (n == 0) {   //不包含变量
         log->file = ngx_conf_open_file(cf->cycle, &value[1]);
         if (log->file == NULL) {
             return NGX_CONF_ERROR;
         }
 
     } else {
+        //获取全路径(如相对路径改为绝对路径，不包含变量解析)
         if (ngx_conf_full_name(cf->cycle, &value[1], 0) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -1326,6 +1492,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         sc.complete_lengths = 1;
         sc.complete_values = 1;
 
+        //编译变量
         if (ngx_http_script_compile(&sc) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -1333,6 +1500,7 @@ ngx_http_log_set_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 process_formats:
 
+    //name为日志格式名称
     if (cf->args->nelts >= 3) {
         name = value[2];
 
@@ -1340,11 +1508,13 @@ process_formats:
             lmcf->combined_used = 1;
         }
 
+    //只配置了日志路径，格式使用默认的combined
     } else {
         ngx_str_set(&name, "combined");
         lmcf->combined_used = 1;
     }
 
+    //从formats中找到相同名称的log_format
     fmt = lmcf->formats.elts;
     for (i = 0; i < lmcf->formats.nelts; i++) {
         if (fmt[i].name.len == name.len
@@ -1355,18 +1525,20 @@ process_formats:
         }
     }
 
+    //log_format未定义:未找到指定名称的log->format
     if (log->format == NULL) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "unknown log format \"%V\"", &name);
         return NGX_CONF_ERROR;
     }
 
-    size = 0;
-    flush = 0;
-    gzip = 0;
+    size = 0;       //buffer=size
+    flush = 0;      //flush=time
+    gzip = 0;       //gzip[=level]
 
     for (i = 3; i < cf->args->nelts; i++) {
 
+        //[buffer=size]
         if (ngx_strncmp(value[i].data, "buffer=", 7) == 0) {
             s.len = value[i].len - 7;
             s.data = value[i].data + 7;
@@ -1382,6 +1554,7 @@ process_formats:
             continue;
         }
 
+        //[flush=time]
         if (ngx_strncmp(value[i].data, "flush=", 6) == 0) {
             s.len = value[i].len - 6;
             s.data = value[i].data + 6;
@@ -1397,6 +1570,7 @@ process_formats:
             continue;
         }
 
+        //[gzip[=level]]
         if (ngx_strncmp(value[i].data, "gzip", 4) == 0
             && (value[i].len == 4 || value[i].data[4] == '='))
         {
@@ -1430,6 +1604,7 @@ process_formats:
 #endif
         }
 
+        //[if=condition]]
         if (ngx_strncmp(value[i].data, "if=", 3) == 0) {
             s.len = value[i].len - 3;
             s.data = value[i].data + 3;
@@ -1444,6 +1619,7 @@ process_formats:
                 return NGX_CONF_ERROR;
             }
 
+            //编译condition
             if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
                 return NGX_CONF_ERROR;
             }
@@ -1465,9 +1641,9 @@ process_formats:
         return NGX_CONF_ERROR;
     }
 
-    if (size) {
+    if (size) {     //buffer_size
 
-        if (log->script) {
+        if (log->script) {      //包含变量的文件名
             ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                "buffered logs cannot have variables in name");
             return NGX_CONF_ERROR;
@@ -1479,6 +1655,7 @@ process_formats:
             return NGX_CONF_ERROR;
         }
 
+        //在log_format配置指令中已经配置过buf了
         if (log->file->data) {
             buffer = log->file->data;
 
@@ -1496,11 +1673,13 @@ process_formats:
             return NGX_CONF_OK;
         }
 
+        //创建代表buffer的结构体ngx_http_log_buf_t
         buffer = ngx_pcalloc(cf->pool, sizeof(ngx_http_log_buf_t));
         if (buffer == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        //申请缓冲区空间
         buffer->start = ngx_pnalloc(cf->pool, size);
         if (buffer->start == NULL) {
             return NGX_CONF_ERROR;
@@ -1509,14 +1688,14 @@ process_formats:
         buffer->pos = buffer->start;
         buffer->last = buffer->start + size;
 
-        if (flush) {
+        if (flush) {        //定时flush
             buffer->event = ngx_pcalloc(cf->pool, sizeof(ngx_event_t));
             if (buffer->event == NULL) {
                 return NGX_CONF_ERROR;
             }
 
             buffer->event->data = log->file;
-            buffer->event->handler = ngx_http_log_flush_handler;
+            buffer->event->handler = ngx_http_log_flush_handler;    //event_handler
             buffer->event->log = &cf->cycle->new_log;
             buffer->event->cancelable = 1;
 
@@ -1526,13 +1705,22 @@ process_formats:
         buffer->gzip = gzip;
 
         log->file->flush = ngx_http_log_flush;
-        log->file->data = buffer;
+        log->file->data = buffer;       //file->data指向日志输出buffer
     }
 
     return NGX_CONF_OK;
 }
 
 
+/**
+ * log_format 配置指令解析函数
+ * 
+ * 例如:
+ * log_format compression '$remote_addr - $remote_user [$time_local] '
+                       '"$request" $status $bytes_sent '
+                       '"$http_referer" "$http_user_agent" "$gzip_ratio"'
+ * 
+ */
 static char *
 ngx_http_log_set_format(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -1542,8 +1730,10 @@ ngx_http_log_set_format(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t           i;
     ngx_http_log_fmt_t  *fmt;
 
+    //配置的多种日志格式
     value = cf->args->elts;
 
+    //检查是否已经有相同名称的日志格式了
     fmt = lmcf->formats.elts;
     for (i = 0; i < lmcf->formats.nelts; i++) {
         if (fmt[i].name.len == value[1].len
@@ -1556,11 +1746,13 @@ ngx_http_log_set_format(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //新增一个元素
     fmt = ngx_array_push(&lmcf->formats);
     if (fmt == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    //格式名称为value[1]
     fmt->name = value[1];
 
     fmt->flushes = ngx_array_create(cf->pool, 4, sizeof(ngx_int_t));
@@ -1577,6 +1769,9 @@ ngx_http_log_set_format(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 解析配置指令 log_format name [escape=default|json|none] string ...;
+ */
 static char *
 ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
     ngx_array_t *ops, ngx_array_t *args, ngx_uint_t s)
@@ -1592,6 +1787,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
     escape = NGX_HTTP_LOG_ESCAPE_DEFAULT;
     value = args->elts;
 
+    //解析 [escape=default|json|none] 
     if (s < args->nelts && ngx_strncmp(value[s].data, "escape=", 7) == 0) {
         data = value[s].data + 7;
 
@@ -1610,10 +1806,12 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
         s++;
     }
 
+    //日志格式解析 ${xxx} 和$xxx等同
     for ( /* void */ ; s < args->nelts; s++) {
 
         i = 0;
 
+        //遍历每个字符。 value[s] 为多个变量的混合  '$remote_addr - $remote_user [$time_local] "$request" '
         while (i < value[s].len) {
 
             op = ngx_array_push(ops);
@@ -1623,6 +1821,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
 
             data = &value[s].data[i];
 
+            //如果是变量
             if (value[s].data[i] == '$') {
 
                 if (++i == value[s].len) {
@@ -1660,6 +1859,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
                         continue;
                     }
 
+                    //找到了一个变量的结束位置
                     break;
                 }
 
@@ -1674,6 +1874,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
                     goto invalid;
                 }
 
+                //与预置的几个变量比较
                 for (v = ngx_http_log_vars; v->name.len; v++) {
 
                     if (v->name.len == var.len
@@ -1688,6 +1889,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
                     }
                 }
 
+                //非预置变量
                 if (ngx_http_log_variable_compile(cf, op, &var, escape)
                     != NGX_OK)
                 {
@@ -1711,6 +1913,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
 
             i++;
 
+            //非变量(如变量之间的分隔符)
             while (i < value[s].len && value[s].data[i] != '$') {
                 i++;
             }
@@ -1722,16 +1925,16 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
                 op->len = len;
                 op->getlen = NULL;
 
-                if (len <= sizeof(uintptr_t)) {
+                if (len <= sizeof(uintptr_t)) {     //如果值的长度小于一个指针（8个字节）
                     op->run = ngx_http_log_copy_short;
                     op->data = 0;
 
-                    while (len--) {
+                    while (len--) {     //op->data指针本身作为数据存储位置
                         op->data <<= 8;
                         op->data |= data[len];
                     }
 
-                } else {
+                } else {    //如果值的长度大于一个指针（8个字节），申请内存空间，将当前固定字符串写入进去
                     op->run = ngx_http_log_copy_long;
 
                     p = ngx_pnalloc(cf->pool, len);
@@ -1740,7 +1943,7 @@ ngx_http_log_compile_format(ngx_conf_t *cf, ngx_array_t *flushes,
                     }
 
                     ngx_memcpy(p, data, len);
-                    op->data = (uintptr_t) p;
+                    op->data = (uintptr_t) p;   //p->data指向新申请的内存
                 }
             }
         }
@@ -1756,6 +1959,14 @@ invalid:
 }
 
 
+/**
+ * 配置指令 open_log_file_cache
+ * 
+ * Defines a cache that stores the file descriptors of frequently used logs whose names contain variables
+ * 
+ * open_log_file_cache max=N [inactive=time] [min_uses=N] [valid=time];
+    open_log_file_cache off;
+ */
 static char *
 ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -1779,6 +1990,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     for (i = 1; i < cf->args->nelts; i++) {
 
+        //max=N sets the maximum number of descriptors in a cache
         if (ngx_strncmp(value[i].data, "max=", 4) == 0) {
 
             max = ngx_atoi(value[i].data + 4, value[i].len - 4);
@@ -1789,6 +2001,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        //[inactive=time]
         if (ngx_strncmp(value[i].data, "inactive=", 9) == 0) {
 
             s.len = value[i].len - 9;
@@ -1802,6 +2015,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        //[min_uses=N] 在inactive时间内，文件至少被使用多少次才被认为活跃而不从缓存区中移除
         if (ngx_strncmp(value[i].data, "min_uses=", 9) == 0) {
 
             min_uses = ngx_atoi(value[i].data + 9, value[i].len - 9);
@@ -1812,6 +2026,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        //[valid=time] 设置要检查文件是否存在的事件间隔，默认60秒
         if (ngx_strncmp(value[i].data, "valid=", 6) == 0) {
 
             s.len = value[i].len - 6;
@@ -1825,6 +2040,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             continue;
         }
 
+        //off 关闭缓冲
         if (ngx_strcmp(value[i].data, "off") == 0) {
 
             llcf->open_file_cache = NULL;
@@ -1840,6 +2056,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //关闭缓冲
     if (llcf->open_file_cache == NULL) {
         return NGX_CONF_OK;
     }
@@ -1850,6 +2067,7 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //初始化open_file_cache
     llcf->open_file_cache = ngx_open_file_cache_init(cf->pool, max, inactive);
 
     if (llcf->open_file_cache) {
@@ -1864,6 +2082,10 @@ ngx_http_log_open_file_cache(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * postconfiguration
+ * 安装一个LOG_PHASE 的handler
+ */
 static ngx_int_t
 ngx_http_log_init(ngx_conf_t *cf)
 {

@@ -44,7 +44,12 @@
  * "--0123456789--" CRLF
  */
 
-
+/**
+ * 是用来处理HTTP请求头 部range部分的，它会解析客户端请求中的range头部，
+ * 最后告知在发送HTTP响应包体时将会 调用到的ngx_http_range_body_filter_module模块，
+ * 该模块会按照range协议修改指向文件的 ngx_buf_t缓冲区中的file_pos和file_last成员，
+ * 以此实现仅发送一个文件的部分内容到客户端
+ */
 typedef struct {
     off_t        start;
     off_t        end;

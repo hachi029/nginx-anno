@@ -452,6 +452,12 @@ failed:
 
 #else
 
+/**
+ * 单个正则匹配，
+ *  re为编译出来的正则表达式
+ *  s 为待匹配的字符串
+ *  
+ */
 ngx_int_t
 ngx_regex_exec(ngx_regex_t *re, ngx_str_t *s, int *captures, ngx_uint_t size)
 {
@@ -462,6 +468,13 @@ ngx_regex_exec(ngx_regex_t *re, ngx_str_t *s, int *captures, ngx_uint_t size)
 #endif
 
 
+/**
+ * 执行正则匹配
+ * a为多个正则组成的动态数组，列表元素为ngx_regex_elt_t
+ * s为待匹配的字符串
+ * 
+ * 命中任意一个a中的正则，即返回NGX_OK
+ */
 ngx_int_t
 ngx_regex_exec_array(ngx_array_t *a, ngx_str_t *s, ngx_log_t *log)
 {
@@ -471,15 +484,16 @@ ngx_regex_exec_array(ngx_array_t *a, ngx_str_t *s, ngx_log_t *log)
 
     re = a->elts;
 
+    //遍历动态数组，逐个匹配
     for (i = 0; i < a->nelts; i++) {
 
         n = ngx_regex_exec(re[i].regex, s, NULL, 0);
 
-        if (n == NGX_REGEX_NO_MATCHED) {
+        if (n == NGX_REGEX_NO_MATCHED) {    //未命中
             continue;
         }
 
-        if (n < 0) {
+        if (n < 0) {        //匹配错误
             ngx_log_error(NGX_LOG_ALERT, log, 0,
                           ngx_regex_exec_n " failed: %i on \"%V\" using \"%s\"",
                           n, s, re[i].name);
@@ -488,7 +502,7 @@ ngx_regex_exec_array(ngx_array_t *a, ngx_str_t *s, ngx_log_t *log)
 
         /* match */
 
-        return NGX_OK;
+        return NGX_OK;  //命中
     }
 
     return NGX_DECLINED;

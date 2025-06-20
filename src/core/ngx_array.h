@@ -13,12 +13,18 @@
 #include <ngx_core.h>
 
 
+/**
+ * 动态数组， 顺序容器
+ * 连续的内存存放着大小相同的元素（就像数组）
+ * 
+ * 支持在达到数组容量的上限时动态改变数组的大小
+ */
 typedef struct {
-    void        *elts;
-    ngx_uint_t   nelts;
-    size_t       size;
-    ngx_uint_t   nalloc;
-    ngx_pool_t  *pool;
+    void        *elts;      //指向数组的首地址
+    ngx_uint_t   nelts;     //是数组中已经使用的元素个数
+    size_t       size;      //每个数组元素占用的内存大小
+    ngx_uint_t   nalloc;    //当前数组中能够容纳元素个数的总大小
+    ngx_pool_t  *pool;      //内存池对象
 } ngx_array_t;
 
 
@@ -28,6 +34,9 @@ void *ngx_array_push(ngx_array_t *a);
 void *ngx_array_push_n(ngx_array_t *a, ngx_uint_t n);
 
 
+/**
+ * 初始化动态数组，包括分配内存(n*size)
+ */
 static ngx_inline ngx_int_t
 ngx_array_init(ngx_array_t *array, ngx_pool_t *pool, ngx_uint_t n, size_t size)
 {

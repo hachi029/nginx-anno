@@ -28,7 +28,7 @@ typedef struct {
 
 
 typedef struct {
-    DIR                         *dir;
+    DIR                         *dir;       //opendir返回的DIR结构体: dir = opendir((const char *) name->data);
     struct dirent               *de;
     struct stat                  info;
 
@@ -62,6 +62,9 @@ typedef struct {
 
 #else
 
+/**
+ * 返回的是Linux系统的文件句柄
+ */
 #define ngx_open_file(name, mode, create, access)                            \
     open((const char *) name, mode|create, access)
 
@@ -246,6 +249,9 @@ ngx_int_t ngx_read_dir(ngx_dir_t *dir);
 #define ngx_de_namelen(dir)      ngx_strlen((dir)->de->d_name)
 #endif
 
+/**
+ * 读取文件目录项详细信息
+ */
 static ngx_inline ngx_int_t
 ngx_de_info(u_char *name, ngx_dir_t *dir)
 {

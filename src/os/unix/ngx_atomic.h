@@ -53,12 +53,30 @@ typedef unsigned long               ngx_atomic_uint_t;
 #define NGX_ATOMIC_T_LEN            (sizeof("-2147483648") - 1)
 #endif
 
+/**
+ * 能够执行原子操作的原子变量只有整型，包括无符号整型ngx_atomic_uint_t和有符号整 型ngx_atomic_t，
+ * 这两种类型都使用了volatile关键字告诉C编译器不要做优化
+ * 
+ * 想要使用原子操作来修改、获取整型变量，自然不能使用加减号，
+ * 而要使用Nginx提供 的两个方法：ngx_atomic_cmp_set和ngx_atomic_fetch_add。
+ * 
+ * 这两个方法都可以用来修改原子变量的值，而ngx_atomic_cmp_set方法同时还可以比较原子变量的值
+ * 
+ */
 typedef volatile ngx_atomic_uint_t  ngx_atomic_t;
 
 
+/**
+ * ngx_atomic_cmp_set方法会将old参数与原子变量lock的值做比较，如果它们相等，则把 lock设为参数set，同时方法返回1；
+ * 如果它们不相等，则不做任何修改，返回0。
+ */
 #define ngx_atomic_cmp_set(lock, old, set)                                    \
     __sync_bool_compare_and_swap(lock, old, set)
 
+/**
+ * ngx_atomic_fetch_add方法会把原子变量value的值加上参数add，同时返回之前value的 值
+ * 
+ */
 #define ngx_atomic_fetch_add(value, add)                                      \
     __sync_fetch_and_add(value, add)
 
@@ -286,7 +304,14 @@ ngx_atomic_cmp_set(ngx_atomic_t *lock, ngx_atomic_uint_t old,
     return 0;
 }
 
-
+/**
+ * 刚开始接收客户端的HTTP请求时使用的是ngx_http_init_request 方法，在这个方法中就会将ngx_stat_reading统计变量加1，
+ * 表示正处于接收用户请求的连接数 加1 (void) ngx_atomic_fetch_add(ngx_stat_reading, 1);
+ * 
+ * 当读取完请求时，如在ngx_http_process_request方法中，开始处理用户请求（不再接 收TCP消息），
+ * 这时会把ngx_stat_reading统计变量减1，(void) ngx_atomic_fetch_add(ngx_stat_reading, -1);
+ * 
+ */
 static ngx_inline ngx_atomic_int_t
 ngx_atomic_fetch_add(ngx_atomic_t *value, ngx_atomic_int_t add)
 {

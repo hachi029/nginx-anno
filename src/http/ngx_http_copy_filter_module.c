@@ -8,7 +8,10 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-
+/**
+ * https://www.kancloud.cn/kancloud/master-nginx-develop/51865
+ * 主要是来将一些需要复制的buf（可能在文件中，也可能在内存中）重新复制一份交给后面的filter模块处理
+ */
 
 typedef struct {
     ngx_bufs_t  bufs;
@@ -34,7 +37,10 @@ static ngx_int_t ngx_http_copy_filter_init(ngx_conf_t *cf);
 
 static ngx_command_t  ngx_http_copy_filter_commands[] = {
 
-    { ngx_string("output_buffers"),
+    //https://nginx.org/en/docs/http/ngx_http_core_module.html#output_buffers
+    //output_buffers number size; 
+    //Sets the number and size of the buffers used for reading a response from a disk.
+    { ngx_string("output_buffers"),     
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_bufs_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -47,7 +53,7 @@ static ngx_command_t  ngx_http_copy_filter_commands[] = {
 
 static ngx_http_module_t  ngx_http_copy_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
-    ngx_http_copy_filter_init,             /* postconfiguration */
+    ngx_http_copy_filter_init,             /* postconfiguration */      //只是安装了一个body filter
 
     NULL,                                  /* create main configuration */
     NULL,                                  /* init main configuration */
@@ -101,7 +107,7 @@ ngx_http_copy_filter(ngx_http_request_t *r, ngx_chain_t *in)
             return NGX_ERROR;
         }
 
-        ngx_http_set_ctx(r, ctx, ngx_http_copy_filter_module);
+        ngx_http_set_ctx(r, ctx, ngx_http_copy_filter_module);  //设置模块ctx
 
         conf = ngx_http_get_module_loc_conf(r, ngx_http_copy_filter_module);
         clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);

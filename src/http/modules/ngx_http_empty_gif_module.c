@@ -9,6 +9,16 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_empty_gif_module.html#empty_gif
+ * 
+ * emits single-pixel transparent GIF
+ * 
+ * location = /_.gif {
+ *   empty_gif;     #发送一个空的gif
+ * }
+ * 
+ */
 static char *ngx_http_empty_gif(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 
@@ -16,7 +26,7 @@ static ngx_command_t  ngx_http_empty_gif_commands[] = {
 
     { ngx_string("empty_gif"),
       NGX_HTTP_LOC_CONF|NGX_CONF_NOARGS,
-      ngx_http_empty_gif,
+      ngx_http_empty_gif,       //content_handler
       0,
       0,
       NULL },
@@ -106,14 +116,21 @@ ngx_module_t  ngx_http_empty_gif_module = {
 };
 
 
+/**
+ * content_type
+ */
 static ngx_str_t  ngx_http_gif_type = ngx_string("image/gif");
 
 
+/**
+ * content_handler
+ */
 static ngx_int_t
 ngx_http_empty_gif_handler(ngx_http_request_t *r)
 {
     ngx_http_complex_value_t  cv;
 
+    //只允许GET/HEAD方法
     if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
         return NGX_HTTP_NOT_ALLOWED;
     }
@@ -128,6 +145,9 @@ ngx_http_empty_gif_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * install content_handler ngx_http_empty_gif_handler
+ */
 static char *
 ngx_http_empty_gif(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

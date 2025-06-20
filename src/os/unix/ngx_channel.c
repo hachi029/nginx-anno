@@ -9,7 +9,15 @@
 #include <ngx_core.h>
 #include <ngx_channel.h>
 
-
+/**
+ * 用于发送消息
+ * 
+ * s参数是要使用的TCP套接字
+ * ch参数是ngx_channel_t类型的消息
+ * size参数是ngx_channel_t结构体的大小
+ * log参数是日志对象
+ * 
+ */
 ngx_int_t
 ngx_write_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size,
     ngx_log_t *log)
@@ -91,7 +99,12 @@ ngx_write_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size,
     return NGX_OK;
 }
 
-
+/**
+ * 读取消息的方法
+ * s套接字，它与发送方使用的s套接字是配对的
+ * 在Nginx中，目前仅存在master进程向worker进程发送消息的 场景，这时对于socketpair方法创建的channel[2]套接字对来说，
+ * master进程会使用channel[0]套 接字来发送消息，而worker进程则会使用channel[1]套接字来接收消息
+ */
 ngx_int_t
 ngx_read_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size, ngx_log_t *log)
 {
@@ -194,7 +207,14 @@ ngx_read_channel(ngx_socket_t s, ngx_channel_t *ch, size_t size, ngx_log_t *log)
     return n;
 }
 
-
+/**
+ * 把接收频道消息的套接字添加到epoll中了，当接收到父进程消息时子进程会通过epoll的事件回调相应的handler方法来处理这个频道消息
+ * 
+ * fd参数就是需要接收消息的套接字, 对于worker子进程来说，就是对应的channel[1]套接字
+ * event参数 是需要检测的事件类型，在上述场景下必然是EPOLLIN
+ * handler参数指向的方法就是用于读 取频道消息的方法，Nginx定义了一个ngx_channel_handler方法用于处理频道消息
+ * 
+ */
 ngx_int_t
 ngx_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd, ngx_int_t event,
     ngx_event_handler_pt handler)
@@ -239,7 +259,11 @@ ngx_add_channel_event(ngx_cycle_t *cycle, ngx_fd_t fd, ngx_int_t event,
     return NGX_OK;
 }
 
-
+/**
+ * 
+ * 关闭这个频道通信方式, 它会关闭这对套接字
+ * 
+ */
 void
 ngx_close_channel(ngx_fd_t *fd, ngx_log_t *log)
 {
