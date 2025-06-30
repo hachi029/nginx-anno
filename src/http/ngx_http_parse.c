@@ -100,6 +100,13 @@ static uint32_t  usual[] = {
 
 /* gcc, icc, msvc and others compile these switches as an jump table */
 
+/**
+ * 将使用状态机解析请求行
+ * 返回值：
+ * 1. 返回NGX_OK表示成功地解析到完整的HTTP请求行
+ * 2. 返回NGX_AGAIN表示目前接收到的字符流不足以构成完成的请求行，还需要接收更多的字符流
+ * 3. 返回NGX_HTTP_PARSE_INVALID_REQUEST或者NGX_HTTP_PARSE_INVALID_09_METHOD等其他值时表示接收到非法的请求行
+ */
 ngx_int_t
 ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b)
 {
@@ -812,6 +819,14 @@ done:
 }
 
 
+/**
+ * 解析header_in缓冲区中的请求头
+ * 
+ * 返回NGX_OK时，表示解析出一行HTTP头部
+ * 返回NGX_HTTP_PARSE_HEADER_DONE时，表示已经解析出了完整的HTTP头 部，这时可以准备开始处理HTTP请求了
+ * 返回NGX_AGAIN时，表示还需要 接收到更多的字符流才能继续解析，
+ * 除此之外 的错误情况
+ */
 ngx_int_t
 ngx_http_parse_header_line(ngx_http_request_t *r, ngx_buf_t *b,
     ngx_uint_t allow_underscores)
@@ -1617,6 +1632,9 @@ args:
 }
 
 
+/**
+ * 解析响应状态行
+ */
 ngx_int_t
 ngx_http_parse_status_line(ngx_http_request_t *r, ngx_buf_t *b,
     ngx_http_status_t *status)
@@ -1835,6 +1853,9 @@ done:
 }
 
 
+/**
+ * 可以解析不安全的uri,如包含../
+ */
 ngx_int_t
 ngx_http_parse_unsafe_uri(ngx_http_request_t *r, ngx_str_t *uri,
     ngx_str_t *args, ngx_uint_t *flags)
@@ -2075,18 +2096,25 @@ ngx_http_parse_set_cookie_lines(ngx_http_request_t *r,
 }
 
 
+/**
+ * 获取arg参数
+ *  name: arg参数名， 如：a
+ *  len: arg参数名长度
+ *  value: 出参， 参数值
+ */
 ngx_int_t
 ngx_http_arg(ngx_http_request_t *r, u_char *name, size_t len, ngx_str_t *value)
 {
     u_char  *p, *last;
 
-    if (r->args.len == 0) {
+    if (r->args.len == 0) {     //如果没有args参数
         return NGX_DECLINED;
     }
 
     p = r->args.data;
     last = p + r->args.len;
 
+    //遍历r->args整个参数
     for ( /* void */ ; p < last; p++) {
 
         /* we need '=' after name, so drop one char from last */
@@ -2097,6 +2125,7 @@ ngx_http_arg(ngx_http_request_t *r, u_char *name, size_t len, ngx_str_t *value)
             return NGX_DECLINED;
         }
 
+        //(p 为args参数开头或 p的前一位为&) 且p+len 为'='
         if ((p == r->args.data || *(p - 1) == '&') && *(p + len) == '=') {
 
             value->data = p + len + 1;

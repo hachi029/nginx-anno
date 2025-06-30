@@ -13,6 +13,8 @@
 #include <ngx_core.h>
 
 
+// 错误日志的级别，0最高，8最低
+// 使用的是低7位
 #define NGX_LOG_STDERR            0
 #define NGX_LOG_EMERG             1
 #define NGX_LOG_ALERT             2
@@ -23,42 +25,82 @@
 #define NGX_LOG_INFO              7
 #define NGX_LOG_DEBUG             8
 
-#define NGX_LOG_DEBUG_CORE        0x010
-#define NGX_LOG_DEBUG_ALLOC       0x020
-#define NGX_LOG_DEBUG_MUTEX       0x040
-#define NGX_LOG_DEBUG_EVENT       0x080
-#define NGX_LOG_DEBUG_HTTP        0x100
-#define NGX_LOG_DEBUG_MAIL        0x200
-#define NGX_LOG_DEBUG_STREAM      0x400
+// 不表示级别，因为已经是debug
+// 表示所属的子系统
+// if ((log)->log_level & level)
+#define NGX_LOG_DEBUG_CORE        0x010     /* nginx核心模块的调试日志 */
+#define NGX_LOG_DEBUG_ALLOC       0x020     /* nginx在分配内存时使用的调试日志 */
+#define NGX_LOG_DEBUG_MUTEX       0x040     /* nginx在使用进程锁时使用的调试日志 */
+#define NGX_LOG_DEBUG_EVENT       0x080     /* nginx event模块的调试日志 */
+#define NGX_LOG_DEBUG_HTTP        0x100     /* nginx http模块的调试日志 */
+#define NGX_LOG_DEBUG_MAIL        0x200     /* nginx mail模块的调试日志 */
+#define NGX_LOG_DEBUG_STREAM      0x400     /* nginx stream模块的调试日志 */
 
 /*
  * do not forget to update debug_levels[] in src/core/ngx_log.c
  * after the adding a new debug level
  */
 
+// 调试级别的上下限
 #define NGX_LOG_DEBUG_FIRST       NGX_LOG_DEBUG_CORE
 #define NGX_LOG_DEBUG_LAST        NGX_LOG_DEBUG_STREAM
+// 特殊调试级别，打印某个连接，最高位
 #define NGX_LOG_DEBUG_CONNECTION  0x80000000
+// 调试所有的子系统，注意没有最高位
+// 最高位给调试某个连接使用
+// 低三位留给了err/warn/info等日志级别
 #define NGX_LOG_DEBUG_ALL         0x7ffffff0
 
 
+// 记录错误日志时可以执行的回调函数
+// 参数是消息缓冲区里剩余的空间
 typedef u_char *(*ngx_log_handler_pt) (ngx_log_t *log, u_char *buf, size_t len);
+
+// 专用的写函数指针
+// 可以写到syslog或者其他地方
 typedef void (*ngx_log_writer_pt) (ngx_log_t *log, ngx_uint_t level,
     u_char *buf, size_t len);
 
 
+// 错误日志结构体
+// 多个日志对象串成一个按level降序的链表
+// 即日志级别由低到高，提高记录日志的效率
+// 一个日志链表可以理解为其他日志模型里的category
+// cycle->log, cscf->error_log, clcf->error_log
+// 因为使用了APPEND，所以多进程写文件是安全的
 struct ngx_log_s {
+    // 日志对象的级别，会过滤掉低级别的日志信息
+    // 即if ((log)->log_level >= level)
     ngx_uint_t           log_level;
+    // 日志文件对象
+    // 里面有日志的文件名
     ngx_open_file_t     *file;
 
-    ngx_atomic_uint_t    connection;
+    // 日志关联的连接计数
+    // c->log->connection = c->number;
+    ngx_atomic_uint_t    connection;    /* 连接数，不为0时会输出到日志文件中 */
 
+    // 记录写日志磁盘满错误发生的时间
+    // 避免反复写磁盘导致的阻塞
+    // 时间间隔为1秒
     time_t               disk_full_time;
 
+    // 记录错误日志时可以执行的回调函数
+    // 参数是消息缓冲区里剩余的空间
+    // 定制额外的信息
+    // 只有高于debug才会执行
+    // 例如ngx_http_log_error
     ngx_log_handler_pt   handler;
+
+    //每个模块都可以自定义data的使用方法。通常，data参数都是在实现了上面的handler回调方法后才使用的。
+    //例如，HTTP框架就定义了handler方法，并在data中放入了这个请求的上下文信息，
+    //这样每次输出日志时都会把这个请求URI输出到日志的尾部
     void                *data;
 
+    // handler执行时需要的数据
+    // 例如ngx_http_log_ctx_t，里面有请求、连接等
     ngx_log_writer_pt    writer;
+    // writer相关的数据，需要用户自己管理   
     void                *wdata;
 
     /*
@@ -67,27 +109,61 @@ struct ngx_log_s {
      * their types all the time
      */
 
+     // 通常由handler使用，定制特殊的日志消息
+    // 例如 while ...
+    //表示当前的动作。实际上，action与data是一样的，只有在实现了handler回调方法后才会使用。
+    //例如，HTTP框架就在handler方法中检查action是否为NULL，如果不为NULL，就会在日志后加入“while ”+action，以此表示当前日志是在进行什么操作，帮助定位问题
     char                *action;
 
+    // 下一个日志对象
+    // 多个日志对象串成一个按level降序的链表
+    // 即日志级别由低到高，提高记录日志的效率
     ngx_log_t           *next;
 };
 
 
+// 错误消息的最大长度，2k字节
 #define NGX_MAX_ERROR_STR   2048
 
 
 /*********************************/
 
+// 通常我们使用c99的可变参数宏
 #if (NGX_HAVE_C99_VARIADIC_MACROS)
 
 #define NGX_HAVE_VARIADIC_MACROS  1
 
+// 最常用的日志宏
+// level, log, err, fmt, ...
 #define ngx_log_error(level, log, ...)                                        \
     if ((log)->log_level >= level) ngx_log_error_core(level, log, __VA_ARGS__)
 
+
+// 先拷贝当前的时间,格式是"1970/09/28 12:00:00"
+// 打印错误等级的字符串描述信息，使用关联数组err_levels
+// 打印pid和tid
+// 打印函数里的字符串可变参数
+// 对整个日志链表执行写入操作
+//ngx_log_error和ngx_log_debug宏只是对其进行了简单的封装
+//err 参数就是错误码，一般是执行系统调用失败后取得的errno参数。
+//当err不为0时，Nginx日志模块将会在正常日志内容前输出这个错误码以及其对应的字符串形式的错误消息。
 void ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     const char *fmt, ...);
 
+// 只有在configure时使用--with-debug才会启用
+// 调试日志宏,级别固定为debug
+// 注意使用&操作检查位
+// 记录日志的条件使用逻辑与操作，检查子系统
+// LOG_DEBUG=DEBUG_ALL=0x7ffffff0
+// 所以在调用log_debug时位操作总成功
+//
+// 调试用的级别，只打印某些特殊子系统的日志
+// 在nginx网站没有很好地文档化
+// ngx_log_set_levels
+// static const char *debug_levels[] = {
+//     "debug_core", "debug_alloc", "debug_mutex", "debug_event",
+//     "debug_http", "debug_mail", "debug_stream"
+// };
 #define ngx_log_debug(level, log, ...)                                        \
     if ((log)->log_level & level)                                             \
         ngx_log_error_core(NGX_LOG_DEBUG, log, __VA_ARGS__)
@@ -127,6 +203,7 @@ void ngx_cdecl ngx_log_debug_core(ngx_log_t *log, ngx_err_t err,
 
 /*********************************/
 
+// 只有在configure时使用--with-debug才会启用下面的debug宏
 #if (NGX_DEBUG)
 
 #if (NGX_HAVE_VARIADIC_MACROS)
@@ -228,8 +305,11 @@ void ngx_cdecl ngx_log_debug_core(ngx_log_t *log, ngx_err_t err,
 
 /*********************************/
 
+// 初始化日志
 ngx_log_t *ngx_log_init(u_char *prefix, u_char *error_log);
+// 直接以alert级别记录日志
 void ngx_cdecl ngx_log_abort(ngx_err_t err, const char *fmt, ...);
+// 在标准错误流输出信息，里面有nginx前缀
 void ngx_cdecl ngx_log_stderr(ngx_err_t err, const char *fmt, ...);
 u_char *ngx_log_errno(u_char *buf, u_char *last, ngx_err_t err);
 ngx_int_t ngx_log_open_default(ngx_cycle_t *cycle);

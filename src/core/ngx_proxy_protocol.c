@@ -24,6 +24,7 @@
     + (           (p)[3]) )
 
 
+ //v2版本的proxy_protocol协议
 typedef struct {
     u_char                                  signature[12];
     u_char                                  version_command;
@@ -96,6 +97,17 @@ static ngx_proxy_protocol_tlv_entry_t  ngx_proxy_protocol_tlv_ssl_entries[] = {
 };
 
 
+/**
+ * https://www.cnblogs.com/flydean/p/16317933.html
+ * 
+ * PROXY协议处理
+ * 一个使用了proxy_header的http请求。（v1）
+ *  PROXY TCP4 192.168.0.1 192.168.0.102 12345 443\r\n
+    GET / HTTP/1.1\r\n
+    Host: 192.168.0.102\r\n
+
+    调用方式 ngx_proxy_protocol_read(c, b->pos, b->last)
+ */
 u_char *
 ngx_proxy_protocol_read(ngx_connection_t *c, u_char *buf, u_char *last)
 {
@@ -108,6 +120,7 @@ ngx_proxy_protocol_read(ngx_connection_t *c, u_char *buf, u_char *last)
     p = buf;
     len = last - buf;
 
+    //v2协议
     if (len >= sizeof(ngx_proxy_protocol_header_t)
         && ngx_memcmp(p, signature, sizeof(signature) - 1) == 0)
     {
@@ -121,9 +134,11 @@ ngx_proxy_protocol_read(ngx_connection_t *c, u_char *buf, u_char *last)
     p += 6;
     len -= 6;
 
+    //PROXY 开头
     if (len >= 7 && ngx_strncmp(p, "UNKNOWN", 7) == 0) {
         ngx_log_debug0(NGX_LOG_DEBUG_CORE, c->log, 0,
                        "PROXY protocol unknown protocol");
+        //如果是 PROXY UNKNOWN
         p += 7;
         goto skip;
     }
@@ -131,36 +146,43 @@ ngx_proxy_protocol_read(ngx_connection_t *c, u_char *buf, u_char *last)
     if (len < 5 || ngx_strncmp(p, "TCP", 3) != 0
         || (p[3] != '4' && p[3] != '6') || p[4] != ' ')
     {
+        //如果不是PROXY TCP4或 PROXY TCP6
         goto invalid;
     }
 
     p += 5;
 
+    //创建一个ngx_proxy_protocol_t结构体
     pp = ngx_pcalloc(c->pool, sizeof(ngx_proxy_protocol_t));
     if (pp == NULL) {
         return NULL;
     }
 
+    //读取源地址
     p = ngx_proxy_protocol_read_addr(c, p, last, &pp->src_addr);
     if (p == NULL) {
         goto invalid;
     }
 
+    //读取目的地址
     p = ngx_proxy_protocol_read_addr(c, p, last, &pp->dst_addr);
     if (p == NULL) {
         goto invalid;
     }
 
+    //读取源端口
     p = ngx_proxy_protocol_read_port(p, last, &pp->src_port, ' ');
     if (p == NULL) {
         goto invalid;
     }
 
+    //读取目的端口
     p = ngx_proxy_protocol_read_port(p, last, &pp->dst_port, CR);
     if (p == NULL) {
         goto invalid;
     }
 
+    //应该还有\n\r标识
     if (p == last) {
         goto invalid;
     }
@@ -187,6 +209,7 @@ skip:
 
 invalid:
 
+    //一直到\r\n 之前的字符会被忽略
     for (p = buf; p < last; p++) {
         if (*p == CR || *p == LF) {
             break;
@@ -200,6 +223,9 @@ invalid:
 }
 
 
+/**
+ * proxy_protocol 读取地址
+ */
 static u_char *
 ngx_proxy_protocol_read_addr(ngx_connection_t *c, u_char *p, u_char *last,
     ngx_str_t *addr)
@@ -243,6 +269,9 @@ ngx_proxy_protocol_read_addr(ngx_connection_t *c, u_char *p, u_char *last,
 }
 
 
+/**
+ * proxy_protocol 读取端口
+ */
 static u_char *
 ngx_proxy_protocol_read_port(u_char *p, u_char *last, in_port_t *port,
     u_char sep)
@@ -322,6 +351,9 @@ ngx_proxy_protocol_write(ngx_connection_t *c, u_char *buf, u_char *last)
 }
 
 
+/**
+ * proxy_protocol协议v2解析
+ */
 static u_char *
 ngx_proxy_protocol_v2_read(ngx_connection_t *c, u_char *buf, u_char *last)
 {

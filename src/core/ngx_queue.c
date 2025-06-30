@@ -18,30 +18,38 @@ static void ngx_queue_merge(ngx_queue_t *queue, ngx_queue_t *tail,
  * or the first element of the queue's second part otherwise
  */
 
+ /* 返回队列链表中心元素 第n/2+1个*/
 ngx_queue_t *
 ngx_queue_middle(ngx_queue_t *queue)
 {
     ngx_queue_t  *middle, *next;
 
+    /* 获取队列链表头节点 */
     middle = ngx_queue_head(queue);
 
+     /* 若队列链表的头节点就是尾节点，表示该队列链表只有一个元素 */
     if (middle == ngx_queue_last(queue)) {
         return middle;
     }
 
+    /* next作为临时指针，首先指向队列链表的头节点 */
     next = ngx_queue_head(queue);
 
+    //快慢指针法
     for ( ;; ) {
+         /* 若队列链表不止一个元素，则等价于middle = middle->next */
         middle = ngx_queue_next(middle);
 
         next = ngx_queue_next(next);
 
+          /* 队列链表有偶数个元素 */
         if (next == ngx_queue_last(queue)) {
             return middle;
         }
 
         next = ngx_queue_next(next);
 
+        /* 队列链表有奇数个元素 */
         if (next == ngx_queue_last(queue)) {
             return middle;
         }
@@ -51,18 +59,26 @@ ngx_queue_middle(ngx_queue_t *queue)
 
 /* the stable merge sort */
 
+/**
+ * 链表排序
+ * 
+ * 使用插入排序法
+ */
 void
 ngx_queue_sort(ngx_queue_t *queue,
     ngx_int_t (*cmp)(const ngx_queue_t *, const ngx_queue_t *))
 {
     ngx_queue_t  *q, tail;
 
+    //头结点
     q = ngx_queue_head(queue);
 
+    /* 若队列链表只有一个元素，则直接返回 */
     if (q == ngx_queue_last(queue)) {
         return;
     }
 
+    //找到中间节点
     q = ngx_queue_middle(queue);
 
     ngx_queue_split(queue, q, &tail);

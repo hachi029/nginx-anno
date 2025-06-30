@@ -15,44 +15,70 @@
 #define NGX_HTTP_LIMIT_CONN_REJECTED_DRY_RUN  3
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_limit_conn_module.html
+ * 
+ * 限制单一key的并发连接数。如限制单一clientIp
+ * 
+ * 只有那些完全读取完请求头的连接才能被计算在内
+ */
+
+ /**
+  * 红黑树节点，与ngx_rbtree_node_t共用了部分内存
+  */
 typedef struct {
     u_char                        color;
-    u_char                        len;
-    u_short                       conn;
-    u_char                        data[1];
+    u_char                        len;          //节点key的长度
+    u_short                       conn;         //节点已有的连接数量
+    u_char                        data[1];      //节点key
 } ngx_http_limit_conn_node_t;
 
 
+/**
+ * 代表ngx_pool上一个cleanup回调函数的参数
+ */
 typedef struct {
     ngx_shm_zone_t               *shm_zone;
     ngx_rbtree_node_t            *node;
 } ngx_http_limit_conn_cleanup_t;
 
 
+/**
+ * 每个限流zone对应一个此结构体
+ */
 typedef struct {
     ngx_rbtree_t                  rbtree;
     ngx_rbtree_node_t             sentinel;
 } ngx_http_limit_conn_shctx_t;
 
 
+/**
+ * 代表一个limit_conn_zone 配置指令的配置项
+ */
 typedef struct {
-    ngx_http_limit_conn_shctx_t  *sh;
-    ngx_slab_pool_t              *shpool;
-    ngx_http_complex_value_t      key;
+    ngx_http_limit_conn_shctx_t  *sh;       //每个zone有一个表示红黑树的结构体
+    ngx_slab_pool_t              *shpool;   //zone
+    ngx_http_complex_value_t      key;      //限流key, 可以包含变量
 } ngx_http_limit_conn_ctx_t;
 
 
+/**
+ * 代表一个limit_conn的配置项
+ */
 typedef struct {
-    ngx_shm_zone_t               *shm_zone;
-    ngx_uint_t                    conn;
+    ngx_shm_zone_t               *shm_zone; //关联的zone
+    ngx_uint_t                    conn;     //最大并发连接数
 } ngx_http_limit_conn_limit_t;
 
 
+/**
+ * 本模块在loc下配置
+ */
 typedef struct {
-    ngx_array_t                   limits;
-    ngx_uint_t                    log_level;
-    ngx_uint_t                    status_code;
-    ngx_flag_t                    dry_run;
+    ngx_array_t                   limits;   //本loc下配置的所有限流策略，元素类型为 ngx_http_limit_conn_limit_t
+    ngx_uint_t                    log_level;    //日志级别
+    ngx_uint_t                    status_code;  //触发限流后向客户端返回的状态码
+    ngx_flag_t                    dry_run;  //触发限流后是否拦截请求
 } ngx_http_limit_conn_conf_t;
 
 
@@ -130,7 +156,9 @@ static ngx_command_t  ngx_http_limit_conn_commands[] = {
 
 
 static ngx_http_module_t  ngx_http_limit_conn_module_ctx = {
+    //注册变量
     ngx_http_limit_conn_add_variables,     /* preconfiguration */
+    //注册PREACCESS PHASE handler
     ngx_http_limit_conn_init,              /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -176,6 +204,9 @@ static ngx_str_t  ngx_http_limit_conn_status[] = {
 };
 
 
+/**
+ * PREACCESS 阶段 handler
+ */
 static ngx_int_t
 ngx_http_limit_conn_handler(ngx_http_request_t *r)
 {
@@ -191,16 +222,19 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
     ngx_http_limit_conn_limit_t    *limits;
     ngx_http_limit_conn_cleanup_t  *lccln;
 
-    if (r->main->limit_conn_status) {
+    if (r->main->limit_conn_status) {       //已经执行过了
         return NGX_DECLINED;
     }
 
+    //获取本模块location级别配置
     lccf = ngx_http_get_module_loc_conf(r, ngx_http_limit_conn_module);
     limits = lccf->limits.elts;
 
+    //依次执行每个限流策略
     for (i = 0; i < lccf->limits.nelts; i++) {
         ctx = limits[i].shm_zone->data;
 
+        //计算限流key
         if (ngx_http_complex_value(r, &ctx->key, &key) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -217,23 +251,28 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
             continue;
         }
 
+        //初始化为PASSED
         r->main->limit_conn_status = NGX_HTTP_LIMIT_CONN_PASSED;
 
+        //计算key的hash
         hash = ngx_crc32_short(key.data, key.len);
 
+        //加锁（进程间锁）
         ngx_shmtx_lock(&ctx->shpool->mutex);
 
+        //根据关键字查找node
         node = ngx_http_limit_conn_lookup(&ctx->sh->rbtree, &key, hash);
 
-        if (node == NULL) {
+        if (node == NULL) {     //未找到
 
             n = offsetof(ngx_rbtree_node_t, color)
                 + offsetof(ngx_http_limit_conn_node_t, data)
                 + key.len;
 
+            //申请一个node
             node = ngx_slab_alloc_locked(ctx->shpool, n);
 
-            if (node == NULL) {
+            if (node == NULL) {     //申请创建node失败
                 ngx_shmtx_unlock(&ctx->shpool->mutex);
                 ngx_http_limit_conn_cleanup_all(r->pool);
 
@@ -248,21 +287,25 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
                 return lccf->status_code;
             }
 
+            //插入新的节点
             lc = (ngx_http_limit_conn_node_t *) &node->color;
 
             node->key = hash;
             lc->len = (u_char) key.len;
-            lc->conn = 1;
+            lc->conn = 1;   //初始化连接数为1
             ngx_memcpy(lc->data, key.data, key.len);
 
+            //插入红黑树
             ngx_rbtree_insert(&ctx->sh->rbtree, node);
 
         } else {
 
+            //查找到了节点
             lc = (ngx_http_limit_conn_node_t *) &node->color;
 
             if ((ngx_uint_t) lc->conn >= limits[i].conn) {
 
+                //超限
                 ngx_shmtx_unlock(&ctx->shpool->mutex);
 
                 ngx_log_error(lccf->log_level, r->connection->log, 0,
@@ -283,14 +326,17 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
                 return lccf->status_code;
             }
 
+            //增加计数
             lc->conn++;
         }
 
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "limit conn: %08Xi %d", node->key, lc->conn);
 
+        //解锁               
         ngx_shmtx_unlock(&ctx->shpool->mutex);
 
+        //增加cleanup函数，请求结束后，连接数减1
         cln = ngx_pool_cleanup_add(r->pool,
                                    sizeof(ngx_http_limit_conn_cleanup_t));
         if (cln == NULL) {
@@ -308,6 +354,9 @@ ngx_http_limit_conn_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * 红黑树节点插入函数
+ */
 static void
 ngx_http_limit_conn_rbtree_insert_value(ngx_rbtree_node_t *temp,
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel)
@@ -330,6 +379,7 @@ ngx_http_limit_conn_rbtree_insert_value(ngx_rbtree_node_t *temp,
             lcn = (ngx_http_limit_conn_node_t *) &node->color;
             lcnt = (ngx_http_limit_conn_node_t *) &temp->color;
 
+            //节点关键字比较
             p = (ngx_memn2cmp(lcn->data, lcnt->data, lcn->len, lcnt->len) < 0)
                 ? &temp->left : &temp->right;
         }
@@ -341,6 +391,7 @@ ngx_http_limit_conn_rbtree_insert_value(ngx_rbtree_node_t *temp,
         temp = *p;
     }
 
+    //插入节点
     *p = node;
     node->parent = temp;
     node->left = sentinel;
@@ -349,6 +400,9 @@ ngx_http_limit_conn_rbtree_insert_value(ngx_rbtree_node_t *temp,
 }
 
 
+/**
+ * key查找
+ */
 static ngx_rbtree_node_t *
 ngx_http_limit_conn_lookup(ngx_rbtree_t *rbtree, ngx_str_t *key, uint32_t hash)
 {
@@ -361,6 +415,7 @@ ngx_http_limit_conn_lookup(ngx_rbtree_t *rbtree, ngx_str_t *key, uint32_t hash)
 
     while (node != sentinel) {
 
+        //现根据hash查找
         if (hash < node->key) {
             node = node->left;
             continue;
@@ -373,6 +428,7 @@ ngx_http_limit_conn_lookup(ngx_rbtree_t *rbtree, ngx_str_t *key, uint32_t hash)
 
         /* hash == node->key */
 
+        //比较原始的key
         lcn = (ngx_http_limit_conn_node_t *) &node->color;
 
         rc = ngx_memn2cmp(key->data, lcn->data, key->len, (size_t) lcn->len);
@@ -388,6 +444,11 @@ ngx_http_limit_conn_lookup(ngx_rbtree_t *rbtree, ngx_str_t *key, uint32_t hash)
 }
 
 
+/**
+ * ngx_http_limit_conn_cleanup 挂载在ngx_pool上的清理函数
+ * 
+ * 负责在请求结束时，执行将连接数减1
+ */
 static void
 ngx_http_limit_conn_cleanup(void *data)
 {
@@ -401,22 +462,31 @@ ngx_http_limit_conn_cleanup(void *data)
     node = lccln->node;
     lc = (ngx_http_limit_conn_node_t *) &node->color;
 
+    /**
+     * 加锁
+     */
     ngx_shmtx_lock(&ctx->shpool->mutex);
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, lccln->shm_zone->shm.log, 0,
                    "limit conn cleanup: %08Xi %d", node->key, lc->conn);
 
+    //连接数减1
     lc->conn--;
 
+    //如果减为0，则删除本节点
     if (lc->conn == 0) {
         ngx_rbtree_delete(&ctx->sh->rbtree, node);
         ngx_slab_free_locked(ctx->shpool, node);
     }
 
+    //解锁
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 }
 
 
+/**
+ * 执行一遍该pool上挂载的所有ngx_http_limit_conn_cleanup函数
+ */
 static ngx_inline void
 ngx_http_limit_conn_cleanup_all(ngx_pool_t *pool)
 {
@@ -433,6 +503,9 @@ ngx_http_limit_conn_cleanup_all(ngx_pool_t *pool)
 }
 
 
+/**
+ * 初始化shm_zone的回调
+ */
 static ngx_int_t
 ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 {
@@ -478,11 +551,15 @@ ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ctx->shpool->data = ctx->sh;
 
+    /**
+     * 初始化红黑树
+     */
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_http_limit_conn_rbtree_insert_value);
 
     len = sizeof(" in limit_conn_zone \"\"") + shm_zone->shm.name.len;
 
+    //日志前缀
     ctx->shpool->log_ctx = ngx_slab_alloc(ctx->shpool, len);
     if (ctx->shpool->log_ctx == NULL) {
         return NGX_ERROR;
@@ -495,6 +572,11 @@ ngx_http_limit_conn_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 }
 
 
+/**
+ * $limit_conn_status get_handler
+ * 
+ * 枚举值： PASSED， REJECTED，REJECTED_DRY_RUN
+ */
 static ngx_int_t
 ngx_http_limit_conn_status_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -514,6 +596,9 @@ ngx_http_limit_conn_status_variable(ngx_http_request_t *r,
 }
 
 
+/**
+ * 创建loc配置结构体
+ */
 static void *
 ngx_http_limit_conn_create_conf(ngx_conf_t *cf)
 {
@@ -538,6 +623,9 @@ ngx_http_limit_conn_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并loc配置结构体
+ */
 static char *
 ngx_http_limit_conn_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -558,6 +646,14 @@ ngx_http_limit_conn_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * limit_conn_zone 配置指令解析
+ * 
+ * limit_conn_zone key zone=name:size;
+ * 
+ * 例如: limit_conn_zone $binary_remote_addr zone=addr:10m;
+ * 
+ */
 static char *
 ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -582,6 +678,7 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ccv.value = &value[1];
     ccv.complex_value = &ctx->key;
 
+    //编译key
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -591,6 +688,7 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     for (i = 2; i < cf->args->nelts; i++) {
 
+        //必须以zone=开头,否则报错
         if (ngx_strncmp(value[i].data, "zone=", 5) == 0) {
 
             name.data = value[i].data + 5;
@@ -603,11 +701,13 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 return NGX_CONF_ERROR;
             }
 
+            //zone的名称
             name.len = p - name.data;
 
             s.data = p + 1;
             s.len = value[i].data + value[i].len - s.data;
 
+            //zone的大小
             size = ngx_parse_size(&s);
 
             if (size == NGX_ERROR) {
@@ -616,6 +716,7 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
                 return NGX_CONF_ERROR;
             }
 
+            //不能小于8页
             if (size < (ssize_t) (8 * ngx_pagesize)) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "zone \"%V\" is too small", &value[i]);
@@ -637,12 +738,14 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //初始化共享内存结构体 ngx_shm_zone_t
     shm_zone = ngx_shared_memory_add(cf, &name, size,
                                      &ngx_http_limit_conn_module);
     if (shm_zone == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    //相同名称的shm_zone已经存在了
     if (shm_zone->data) {
         ctx = shm_zone->data;
 
@@ -652,13 +755,26 @@ ngx_http_limit_conn_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    shm_zone->init = ngx_http_limit_conn_init_zone;
+    shm_zone->init = ngx_http_limit_conn_init_zone;     //初始化zone的回调
     shm_zone->data = ctx;
 
     return NGX_CONF_OK;
 }
 
 
+/**
+ * 解析配置指令 limit_conn
+ * 配置格式： limit_conn zone number;
+ * 
+ * Sets the shared memory zone and the maximum allowed number of connections for a given key value
+ * 
+ * 一个location下可以同时配置多个如：
+ *  limit_conn perip 10;
+    limit_conn perserver 100;
+ *
+ * 每个配置项是 ngx_http_limit_conn_conf_t 中动态数组limits的一项
+ *
+ */
 static char *
 ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -674,12 +790,14 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     shm_zone = ngx_shared_memory_add(cf, &value[1], 0,
                                      &ngx_http_limit_conn_module);
+    //配置的zone不存在
     if (shm_zone == NULL) {
         return NGX_CONF_ERROR;
     }
 
     limits = lccf->limits.elts;
 
+    //初始化动态数组
     if (limits == NULL) {
         if (ngx_array_init(&lccf->limits, cf->pool, 1,
                            sizeof(ngx_http_limit_conn_limit_t))
@@ -689,6 +807,7 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //如果有相同的zone了，说明对同一key做了不同的配置
     for (i = 0; i < lccf->limits.nelts; i++) {
         if (shm_zone == limits[i].shm_zone) {
             return "is duplicate";
@@ -708,6 +827,7 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //加入lccf->limits 中
     limit = ngx_array_push(&lccf->limits);
     if (limit == NULL) {
         return NGX_CONF_ERROR;
@@ -720,6 +840,9 @@ ngx_http_limit_conn(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 注册变量
+ */
 static ngx_int_t
 ngx_http_limit_conn_add_variables(ngx_conf_t *cf)
 {
@@ -739,6 +862,9 @@ ngx_http_limit_conn_add_variables(ngx_conf_t *cf)
 }
 
 
+/**
+ * 注册一个PREACCESS阶段的handler
+ */
 static ngx_int_t
 ngx_http_limit_conn_init(ngx_conf_t *cf)
 {

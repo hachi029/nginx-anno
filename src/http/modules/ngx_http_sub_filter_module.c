@@ -10,9 +10,20 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_sub_module.html
+ * 
+ * 实现文本替换，非默认启用
+ * 
+ * 如： sub_filter '<a href="http://127.0.0.1:8080/'  '<a href="https://$host/';
+ */
+
+/**
+ * 表示一条替换指令
+ */
 typedef struct {
-    ngx_http_complex_value_t   match;
-    ngx_http_complex_value_t   value;
+    ngx_http_complex_value_t   match;       //原始值
+    ngx_http_complex_value_t   value;       //替换值
 } ngx_http_sub_pair_t;
 
 
@@ -23,31 +34,37 @@ typedef struct {
 
 
 typedef struct {
-    ngx_uint_t                 min_match_len;
-    ngx_uint_t                 max_match_len;
+    ngx_uint_t                 min_match_len;       //最短替换源字符串的长度
+    ngx_uint_t                 max_match_len;       //最长替换源字符串的长度
 
     u_char                     index[257];
     u_char                     shift[256];
 } ngx_http_sub_tables_t;
 
 
+/**
+ * 模块loc级别配置结构体
+ */
 typedef struct {
+    //标识要替换的string是否包含变量
     ngx_uint_t                 dynamic; /* unsigned dynamic:1; */
 
-    ngx_array_t               *pairs;
+    ngx_array_t               *pairs;       //表示当前loc上配置的所有替换规则，元素类型为ngx_http_sub_pair_t
 
     ngx_http_sub_tables_t     *tables;
 
-    ngx_hash_t                 types;
+    ngx_hash_t                 types;           //types_keys 组成的hash表
+    ngx_flag_t                 once;            //标识只进行一次替换
+    ngx_flag_t                 last_modified;   //标识是否保留last_modified响应头
 
-    ngx_flag_t                 once;
-    ngx_flag_t                 last_modified;
-
-    ngx_array_t               *types_keys;
-    ngx_array_t               *matches;
+    ngx_array_t               *types_keys;      //sub_filter_types mime-type ...; 配置进行替换的 MIME types. 元素类型为 ngx_hash_key_t
+    ngx_array_t               *matches;         //如果dynamic=0， matches为pairs复制，元素类型为 ngx_http_sub_match_t
 } ngx_http_sub_loc_conf_t;
 
 
+/**
+ * 模块的自定义上下文
+ */
 typedef struct {
     ngx_str_t                  saved;
     ngx_str_t                  looked;
@@ -134,6 +151,7 @@ static ngx_command_t  ngx_http_sub_filter_commands[] = {
 
 static ngx_http_module_t  ngx_http_sub_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //注册header_filter/body_filter
     ngx_http_sub_filter_init,              /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -167,6 +185,9 @@ static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_http_output_body_filter_pt    ngx_http_next_body_filter;
 
 
+/**
+ * header filter
+ */
 static ngx_int_t
 ngx_http_sub_header_filter(ngx_http_request_t *r)
 {
@@ -181,21 +202,23 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
 
     if (slcf->pairs == NULL
         || r->headers_out.content_length_n == 0
-        || ngx_http_test_content_type(r, &slcf->types) == NULL)
+        || ngx_http_test_content_type(r, &slcf->types) == NULL)     //响应头是否命中配置的content_type
     {
         return ngx_http_next_header_filter(r);
     }
 
+    //创建模块自定义上下文结构体
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_sub_ctx_t));
     if (ctx == NULL) {
         return NGX_ERROR;
     }
 
-    if (slcf->dynamic == 0) {
+    if (slcf->dynamic == 0) {       //如果key不包含变量，直接复制配置文件中的
         ctx->tables = slcf->tables;
         ctx->matches = slcf->matches;
 
     } else {
+        //否则获取key表示的复杂变量值，然后构建ctx->matches数组
         pairs = slcf->pairs->elts;
         n = slcf->pairs->nelts;
 
@@ -204,6 +227,7 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
             return NGX_ERROR;
         }
 
+        //遍历所有的匹配规则，获取key的真实值
         j = 0;
         for (i = 0; i < n; i++) {
             matches[j].value = &pairs[i].value;
@@ -215,6 +239,7 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
             }
 
             m = &matches[j].match;
+            //获取每个替换规则中key的真实值
             if (ngx_http_complex_value(r, &pairs[i].match, m) != NGX_OK) {
                 return NGX_ERROR;
             }
@@ -231,11 +256,13 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
             return ngx_http_next_header_filter(r);
         }
 
+        //创建matches数组
         ctx->matches = ngx_palloc(r->pool, sizeof(ngx_array_t));
         if (ctx->matches == NULL) {
             return NGX_ERROR;
         }
 
+        //赋值数据
         ctx->matches->elts = matches;
         ctx->matches->nelts = j;
 
@@ -244,6 +271,7 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
             return NGX_ERROR;
         }
 
+        //初始化ctx->tables
         ngx_http_sub_init_tables(ctx->tables, ctx->matches->elts,
                                  ctx->matches->nelts);
     }
@@ -258,6 +286,7 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    //保存模块上下文结构体
     ngx_http_set_ctx(r, ctx, ngx_http_sub_filter_module);
 
     ctx->offset = ctx->tables->min_match_len - 1;
@@ -265,15 +294,15 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
 
     r->filter_need_in_memory = 1;
 
-    if (r == r->main) {
-        ngx_http_clear_content_length(r);
+    if (r == r->main) {         //如果是主请求
+        ngx_http_clear_content_length(r);       //清理content_length响应头
 
-        if (!slcf->last_modified) {
+        if (!slcf->last_modified) {             //根据配置是否清理响应头last_modified / etag
             ngx_http_clear_last_modified(r);
             ngx_http_clear_etag(r);
 
         } else {
-            ngx_http_weak_etag(r);
+            ngx_http_weak_etag(r);      //如果配置保存last_modified, etag标识为weak
         }
     }
 
@@ -281,6 +310,9 @@ ngx_http_sub_header_filter(ngx_http_request_t *r)
 }
 
 
+/**
+ * body filter
+ */
 static ngx_int_t
 ngx_http_sub_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -293,12 +325,14 @@ ngx_http_sub_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     ngx_http_sub_match_t      *match;
     ngx_http_sub_loc_conf_t   *slcf;
 
+    //获取模块上下文结构体
     ctx = ngx_http_get_module_ctx(r, ngx_http_sub_filter_module);
 
     if (ctx == NULL) {
         return ngx_http_next_body_filter(r, in);
     }
 
+    //空响应体
     if ((in == NULL
          && ctx->buf == NULL
          && ctx->in == NULL
@@ -321,6 +355,7 @@ ngx_http_sub_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
     /* add the incoming chain to the chain ctx->in */
 
     if (in) {
+        //将in拷贝到  &ctx->in
         if (ngx_chain_add_copy(r->pool, &ctx->in, in) != NGX_OK) {
             return NGX_ERROR;
         }
@@ -334,6 +369,7 @@ ngx_http_sub_body_filter(ngx_http_request_t *r, ngx_chain_t *in)
 
     while (ctx->in || ctx->buf) {
 
+        //ctx->buf 指向ctx->in->buf. ctx->in指向下一个buf
         if (ctx->buf == NULL) {
 
             cl = ctx->in;
@@ -789,6 +825,14 @@ ngx_http_sub_match(ngx_http_sub_ctx_t *ctx, ngx_int_t start, ngx_str_t *m)
 }
 
 
+/**
+ * sub_filter 指令配置解析
+ * 
+ * 	sub_filter string replacement;
+ *  
+ *  可以配置多个
+ * 
+ */
 static char *
 ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -805,6 +849,7 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //初始化slcf->pairs动态数组
     if (slcf->pairs == NULL) {
         slcf->pairs = ngx_array_create(cf->pool, 1,
                                        sizeof(ngx_http_sub_pair_t));
@@ -813,6 +858,7 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //最多255条
     if (slcf->pairs->nelts == 255) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "number of search patterns exceeds 255");
@@ -821,6 +867,7 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_strlow(value[1].data, value[1].data, value[1].len);
 
+    //创建一个代表一条替换规则的 ngx_http_sub_pair_t
     pair = ngx_array_push(slcf->pairs);
     if (pair == NULL) {
         return NGX_CONF_ERROR;
@@ -832,14 +879,17 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ccv.value = &value[1];
     ccv.complex_value = &pair->match;
 
+    //编译复杂变量 value[1] string
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
     if (ccv.complex_value->lengths != NULL) {
+        //包含变量
         slcf->dynamic = 1;
 
     } else {
+        //不包含变量，转小写
         ngx_strlow(pair->match.value.data, pair->match.value.data,
                    pair->match.value.len);
     }
@@ -850,6 +900,7 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ccv.value = &value[2];
     ccv.complex_value = &pair->value;
 
+    //编译replacement value[2]
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -858,6 +909,9 @@ ngx_http_sub_filter(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 创建loc配置结构体
+ */
 static void *
 ngx_http_sub_create_conf(ngx_conf_t *cf)
 {
@@ -886,6 +940,9 @@ ngx_http_sub_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并loc配置结构体
+ */
 static char *
 ngx_http_sub_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -913,20 +970,25 @@ ngx_http_sub_merge_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->tables = prev->tables;
     }
 
+    //conf->dynamic == 0 表示所有sub_filter 配置指令中配置的key都是静态不包含变量的
+    //如果conf->dynamic == 0， 将 conf->pairs 复制到 conf->matches
     if (conf->pairs && conf->dynamic == 0 && conf->tables == NULL) {
         pairs = conf->pairs->elts;
         n = conf->pairs->nelts;
 
+        //申请一个长度为n的ngx_http_sub_match_t数组
         matches = ngx_palloc(cf->pool, sizeof(ngx_http_sub_match_t) * n);
         if (matches == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        //为每个ngx_http_sub_match_t赋值
         for (i = 0; i < n; i++) {
             matches[i].match = pairs[i].match.value;
             matches[i].value = &pairs[i].value;
         }
 
+        //创建  conf->matches 动态数组
         conf->matches = ngx_palloc(cf->pool, sizeof(ngx_array_t));
         if (conf->matches == NULL) {
             return NGX_CONF_ERROR;
@@ -940,6 +1002,7 @@ ngx_http_sub_merge_conf(ngx_conf_t *cf, void *parent, void *child)
             return NGX_CONF_ERROR;
         }
 
+        //初始化conf->tables
         ngx_http_sub_init_tables(conf->tables, conf->matches->elts,
                                  conf->matches->nelts);
     }
@@ -955,8 +1018,8 @@ ngx_http_sub_init_tables(ngx_http_sub_tables_t *tables,
     u_char      c;
     ngx_uint_t  i, j, min, max, ch;
 
-    min = match[0].match.len;
-    max = match[0].match.len;
+    min = match[0].match.len;       //最短替换源字符串的长度
+    max = match[0].match.len;       //最长替换源字符串的长度
 
     for (i = 1; i < n; i++) {
         min = ngx_min(min, match[i].match.len);
@@ -967,6 +1030,7 @@ ngx_http_sub_init_tables(ngx_http_sub_tables_t *tables,
     tables->max_match_len = max;
 
     ngx_http_sub_cmp_index = tables->min_match_len - 1;
+    //根据第ngx_http_sub_cmp_index个字符进行排序
     ngx_sort(match, n, sizeof(ngx_http_sub_match_t), ngx_http_sub_cmp_matches);
 
     min = ngx_min(min, 255);
@@ -974,6 +1038,7 @@ ngx_http_sub_init_tables(ngx_http_sub_tables_t *tables,
 
     ch = 0;
 
+    //n为match数组个数
     for (i = 0; i < n; i++) {
 
         for (j = 0; j < min; j++) {
@@ -993,6 +1058,11 @@ ngx_http_sub_init_tables(ngx_http_sub_tables_t *tables,
 }
 
 
+/**
+ * ngx_http_sub_match_t 类型的比较函数
+ * 
+ * 根据ngx_http_sub_match_t中ngx_str_t成员match的第ngx_http_sub_cmp_index个字符进行排序
+ */
 static ngx_int_t
 ngx_http_sub_cmp_matches(const void *one, const void *two)
 {
@@ -1002,6 +1072,7 @@ ngx_http_sub_cmp_matches(const void *one, const void *two)
     first = (ngx_http_sub_match_t *) one;
     second = (ngx_http_sub_match_t *) two;
 
+    //第ngx_http_sub_cmp_index个字符
     c1 = first->match.data[ngx_http_sub_cmp_index];
     c2 = second->match.data[ngx_http_sub_cmp_index];
 
@@ -1009,6 +1080,10 @@ ngx_http_sub_cmp_matches(const void *one, const void *two)
 }
 
 
+/**
+ * postconfiguration
+ * 注册header_filter/body_filter
+ */
 static ngx_int_t
 ngx_http_sub_filter_init(ngx_conf_t *cf)
 {

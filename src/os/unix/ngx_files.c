@@ -291,6 +291,10 @@ ngx_open_tempfile(u_char *name, ngx_uint_t persistent, ngx_uint_t access)
 }
 
 
+/**
+ * 将链表中的buf写入到文件中
+ * 根据buf的个数选择使用pwrite()或writev()函数
+ */
 ssize_t
 ngx_write_chain_to_file(ngx_file_t *file, ngx_chain_t *cl, off_t offset,
     ngx_pool_t *pool)
@@ -301,6 +305,7 @@ ngx_write_chain_to_file(ngx_file_t *file, ngx_chain_t *cl, off_t offset,
 
     /* use pwrite() if there is the only buf in a chain */
 
+    //如果只有一个buf
     if (cl->next == NULL) {
         return ngx_write_file(file, cl->buf->pos,
                               (size_t) (cl->buf->last - cl->buf->pos),
@@ -314,11 +319,12 @@ ngx_write_chain_to_file(ngx_file_t *file, ngx_chain_t *cl, off_t offset,
 
     do {
         /* create the iovec and coalesce the neighbouring bufs */
-        cl = ngx_chain_to_iovec(&vec, cl);
+        //将vec链表中的buf转换为iovec结构体
+        cl = ngx_chain_to_iovec(&vec, cl);      //返回的cl指向下一个待处理的buf
 
         /* use pwrite() if there is the only iovec buffer */
 
-        if (vec.count == 1) {
+        if (vec.count == 1) {       //如果只有一个iovec
             n = ngx_write_file(file, (u_char *) iovs[0].iov_base,
                                iovs[0].iov_len, offset);
 
@@ -329,6 +335,7 @@ ngx_write_chain_to_file(ngx_file_t *file, ngx_chain_t *cl, off_t offset,
             return total + n;
         }
 
+        //如果有多个iovec， 则使用writev()函数
         n = ngx_writev_file(file, &vec, offset);
 
         if (n == NGX_ERROR) {
@@ -338,12 +345,20 @@ ngx_write_chain_to_file(ngx_file_t *file, ngx_chain_t *cl, off_t offset,
         offset += n;
         total += n;
 
-    } while (cl);
+    } while (cl);      //循环处理直到cl为空
 
     return total;
 }
 
 
+/**
+ * 将链表中的buf转换为iovec结构体
+ * iovec结构体是一个数组，数组的大小为NGX_IOVS_PREALLOCATE
+ * 
+ * iovec.count 表示数组中实际使用的元素个数
+ * iovec.size 表示数组中所有元素的总大小
+ * iovec.iovs 数组中存储的是每个buf的起始地址和长度
+ */
 static ngx_chain_t *
 ngx_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *cl)
 {
@@ -357,26 +372,28 @@ ngx_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *cl)
     total = 0;
     n = 0;
 
+    //遍历链表
     for ( /* void */ ; cl; cl = cl->next) {
 
-        if (ngx_buf_special(cl->buf)) {
+        if (ngx_buf_special(cl->buf)) {     //如果buf是特殊buf，则跳过
             continue;
         }
 
         size = cl->buf->last - cl->buf->pos;
 
-        if (prev == cl->buf->pos) {
+        if (prev == cl->buf->pos) {     //说明这个buf和上一个buf地址是连续的，直接复用同一个iov结构体
             iov->iov_len += size;
 
         } else {
-            if (n == vec->nalloc) {
+            if (n == vec->nalloc) {     //如果vec的iovec数组已满，跳出循环
                 break;
             }
 
-            iov = &vec->iovs[n++];
+            //iov代表一个缓冲块
+            iov = &vec->iovs[n++];     //获取下一个iov
 
-            iov->iov_base = (void *) cl->buf->pos;
-            iov->iov_len = size;
+            iov->iov_base = (void *) cl->buf->pos;      //设置iov的起始位置
+            iov->iov_len = size;            //设置iov的长度
         }
 
         prev = cl->buf->pos + size;
@@ -672,6 +689,11 @@ ngx_close_file_mapping(ngx_file_mapping_t *fm)
 }
 
 
+/**
+ * 打开本地磁盘目录
+ * name:目录路径 
+ * dir: 出参，一个代表文件目录的结构体
+ */
 ngx_int_t
 ngx_open_dir(ngx_str_t *name, ngx_dir_t *dir)
 {
@@ -687,6 +709,11 @@ ngx_open_dir(ngx_str_t *name, ngx_dir_t *dir)
 }
 
 
+/**
+ * 读取一个目录项
+ * 使用方法：
+ *  先调用ngx_open_dir打开目录， 然后每次调用一此本方法，迭代读取一个directory_entry
+ */
 ngx_int_t
 ngx_read_dir(ngx_dir_t *dir)
 {
@@ -758,6 +785,18 @@ ngx_close_glob(ngx_glob_t *gl)
     globfree(&gl->pglob);
 }
 
+/**
+ * 对于文件锁，Nginx封装了3个方法：
+ * ngx_trylock_fd实现了不会阻塞进程、不会使得进程 进入睡眠状态的互斥锁；
+ * ngx_lock_fd提供的互斥锁在锁已经被其他进程拿到时将会导致当前 进程进入睡眠状态，直到顺利拿到这个锁后，
+ *      当前进程才会被Linux内核重新调度，所以它 是阻塞操作；
+ * ngx_unlock_fd用于释放互斥锁
+ * 
+ * nginx.conf文件中的lock_file配置项指定的文件路径，就是用于文件互斥锁的，
+ * 这个文件被打开后得到的句柄，将会作为fd参数传递给fcntl方法，提供一种锁机制
+ * 
+ * 
+ */
 
 ngx_err_t
 ngx_trylock_fd(ngx_fd_t fd)
@@ -765,9 +804,24 @@ ngx_trylock_fd(ngx_fd_t fd)
     struct flock  fl;
 
     ngx_memzero(&fl, sizeof(struct flock));
-    fl.l_type = F_WRLCK;
+    fl.l_type = F_WRLCK; 
     fl.l_whence = SEEK_SET;
 
+    /**
+     * 基于文件的互斥锁
+     * int fcntl(int fd, int cmd, struct flock *lock);
+     * fd是打开的文件句柄
+     * cmd表示执行的锁操作
+     * lock描述了这个锁的信息
+     * 
+     * cmd参数在Nginx中只会有两个值：F_SETLK和F_SETLKW，它们都表示试图获得 互斥锁，
+     *  使用F_SETLK时如果互斥锁已经被其他进程占用，fcntl方法不会等待其他进程释放锁且自己拿到锁后才返回，而是立即返回获取互斥锁失败；
+     *  使用F_SETLKW时则不同，锁被占用后fcntl方法会一直等待，在其他进程没有释放锁时，当前进程就会阻塞在fcntl方法中，
+     *          这种阻塞会导致当前进程由可执行状态转为睡眠状态
+     * 
+     */
+    // F_SETLK意味着不会导致进程睡眠
+    //  获取fd对应的互斥锁，如果返回 -1，则这时的 ngx_errno将保存错误码
     if (fcntl(fd, F_SETLK, &fl) == -1) {
         return ngx_errno;
     }
@@ -776,6 +830,10 @@ ngx_trylock_fd(ngx_fd_t fd)
 }
 
 
+/**
+ * 此方法将会阻塞进程的执行
+ * 
+ */
 ngx_err_t
 ngx_lock_fd(ngx_fd_t fd)
 {
@@ -785,6 +843,7 @@ ngx_lock_fd(ngx_fd_t fd)
     fl.l_type = F_WRLCK;
     fl.l_whence = SEEK_SET;
 
+    // F_SETLKW会导致进程睡眠
     if (fcntl(fd, F_SETLKW, &fl) == -1) {
         return ngx_errno;
     }
@@ -793,6 +852,11 @@ ngx_lock_fd(ngx_fd_t fd)
 }
 
 
+/**
+ * 
+ * 用于释放当前进程已经拿到的互斥锁
+ * 当关闭fd句柄对应的文件时，当前进程将自动释放已经拿到的锁
+ */
 ngx_err_t
 ngx_unlock_fd(ngx_fd_t fd)
 {
@@ -802,6 +866,7 @@ ngx_unlock_fd(ngx_fd_t fd)
     fl.l_type = F_UNLCK;
     fl.l_whence = SEEK_SET;
 
+    // F_UNLCK表示将要释放锁
     if (fcntl(fd, F_SETLK, &fl) == -1) {
         return  ngx_errno;
     }

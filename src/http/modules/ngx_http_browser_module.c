@@ -21,6 +21,17 @@
 #define  NGX_HTTP_ANCIENT_BROWSER  1
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_browser_module.html
+ * 
+ * broswer模块主要作用是根据http请求头中"User-Agent"的值，以浏览器的特征字符来判断新旧浏览器，并生成对应的变量，以供后续的请求处理逻辑来使用
+ * 
+ * 根据UA是modern_browser还是ancient_browser 创建几个变量
+ * $modern_browser 如果浏览器被视为 modern_browser， 则值为配置指令 modern_browser_value string; 中的值（值就是nginx.conf里的字面量，不涉及变量）
+ * $ancient_browser 如果浏览器被视为 ancient_browser 则值为配置指令 ancient_browser_value string; 中的值（值就是nginx.conf里的字面量，不涉及变量）
+ * $msie 是否是MSIE
+ * 
+ */
 typedef struct {
     u_char                      browser[12];
     size_t                      skip;
@@ -30,21 +41,24 @@ typedef struct {
 
 
 typedef struct {
-    ngx_uint_t                  version;
-    size_t                      skip;
+    ngx_uint_t                  version;     //配置值version
+    size_t                      skip;       //标识在数组ngx_http_browser_commands中的index
     size_t                      add;
     u_char                      name[12];
 } ngx_http_modern_browser_t;
 
 
+/**
+ * 模块配置结构体
+ */
 typedef struct {
-    ngx_array_t                *modern_browsers;
-    ngx_array_t                *ancient_browsers;
-    ngx_http_variable_value_t  *modern_browser_value;
-    ngx_http_variable_value_t  *ancient_browser_value;
+    ngx_array_t                *modern_browsers;        //元素类型为 ngx_http_modern_browser_t
+    ngx_array_t                *ancient_browsers;       //存储的是配置指令 ancient_browser的所有配置值，元素类型为    ngx_str_t
+    ngx_http_variable_value_t  *modern_browser_value;   //$modern_browser的值
+    ngx_http_variable_value_t  *ancient_browser_value;  //$ancient_browser的值
 
-    unsigned                    modern_unlisted_browsers:1;
-    unsigned                    netscape4:1;
+    unsigned                    modern_unlisted_browsers:1;     //标识是否配置了 modern_browser unlisted；
+    unsigned                    netscape4:1;                    //ancient_browser 配置指令中是否包括netscape4
 } ngx_http_browser_conf_t;
 
 
@@ -74,6 +88,7 @@ static char *ngx_http_ancient_browser_value(ngx_conf_t *cf, ngx_command_t *cmd,
 
 static ngx_command_t  ngx_http_browser_commands[] = {
 
+    //	modern_browser browser version;  如果ua以配置值$browser开头
     { ngx_string("modern_browser"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE12,
       ngx_http_modern_browser,
@@ -81,6 +96,7 @@ static ngx_command_t  ngx_http_browser_commands[] = {
       0,
       NULL },
 
+    //	ancient_browser string ...; 如果ua中包含这个指令配置的任意一个字符串，则将浏览器视为 ancient_browser，同时设置$ancient_browser 变量
     { ngx_string("ancient_browser"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_ancient_browser,
@@ -211,6 +227,9 @@ static ngx_http_modern_browser_mask_t  ngx_http_modern_browser_masks[] = {
 };
 
 
+/**
+ * 本模块提供的变量
+ */
 static ngx_http_variable_t  ngx_http_browser_vars[] = {
 
     { ngx_string("msie"), NULL, ngx_http_msie_variable,
@@ -226,6 +245,10 @@ static ngx_http_variable_t  ngx_http_browser_vars[] = {
 };
 
 
+/**
+ * $modern_browser 和 $ancient_browser 的get_handler
+ * 
+ */
 static ngx_int_t
 ngx_http_browser_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
@@ -237,11 +260,13 @@ ngx_http_browser_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 
     rc = ngx_http_browser(r, cf);
 
+    //如果是MODERN_BROWSER
     if (data == NGX_HTTP_MODERN_BROWSER && rc == NGX_HTTP_MODERN_BROWSER) {
         *v = *cf->modern_browser_value;
         return NGX_OK;
     }
 
+    //如果是ANCIENT_BROWSER
     if (data == NGX_HTTP_ANCIENT_BROWSER && rc == NGX_HTTP_ANCIENT_BROWSER) {
         *v = *cf->ancient_browser_value;
         return NGX_OK;
@@ -252,6 +277,10 @@ ngx_http_browser_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 }
 
 
+/**
+ * 判断浏览器类型
+ * 返回值是 NGX_HTTP_MODERN_BROWSER or NGX_HTTP_ANCIENT_BROWSER
+ */
 static ngx_uint_t
 ngx_http_browser(ngx_http_request_t *r, ngx_http_browser_conf_t *cf)
 {
@@ -261,8 +290,8 @@ ngx_http_browser(ngx_http_request_t *r, ngx_http_browser_conf_t *cf)
     ngx_uint_t                  i, version, ver, scale;
     ngx_http_modern_browser_t  *modern;
 
-    if (r->headers_in.user_agent == NULL) {
-        if (cf->modern_unlisted_browsers) {
+    if (r->headers_in.user_agent == NULL) {     //没有UA
+        if (cf->modern_unlisted_browsers) {     //配置了modern_unlisted_browsers
             return NGX_HTTP_MODERN_BROWSER;
         }
 
@@ -380,20 +409,26 @@ ngx_http_browser(ngx_http_request_t *r, ngx_http_browser_conf_t *cf)
 }
 
 
+/**
+ * $msie get_handler
+ */
 static ngx_int_t
 ngx_http_msie_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
 {
     if (r->headers_in.msie) {
-        *v = ngx_http_variable_true_value;
+        *v = ngx_http_variable_true_value;  //"1"
         return NGX_OK;
     }
 
-    *v = ngx_http_variable_null_value;
+    *v = ngx_http_variable_null_value;      //空字符""
     return NGX_OK;
 }
 
 
+/**
+ * 注册本模块提供的变量
+ */
 static ngx_int_t
 ngx_http_browser_add_variables(ngx_conf_t *cf)
 {
@@ -414,6 +449,9 @@ ngx_http_browser_add_variables(ngx_conf_t *cf)
 }
 
 
+/**
+ * 创建模块配置结构体
+ */
 static void *
 ngx_http_browser_create_conf(ngx_conf_t *cf)
 {
@@ -440,6 +478,9 @@ ngx_http_browser_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并模块配置结构体
+ */
 static char *
 ngx_http_browser_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -455,6 +496,7 @@ ngx_http_browser_merge_conf(ngx_conf_t *cf, void *parent, void *child)
      * with a real skip value.  The zero value means Opera.
      */
 
+    //如果当前没配置，使用pre配置
     if (conf->modern_browsers == NULL && conf->modern_unlisted_browsers == 0) {
         conf->modern_browsers = prev->modern_browsers;
         conf->modern_unlisted_browsers = prev->modern_unlisted_browsers;
@@ -534,6 +576,12 @@ ngx_http_modern_browser_sort(const void *one, const void *two)
 }
 
 
+/**
+ * modern_browser 配置指令解析函数
+ * 
+ * Syntax:	modern_browser browser version;
+            modern_browser unlisted;
+ */
 static char *
 ngx_http_modern_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -547,7 +595,7 @@ ngx_http_modern_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
-    if (cf->args->nelts == 2) {
+    if (cf->args->nelts == 2) {     //只有一个参数时，值只能为unlisted
         if (ngx_strcmp(value[1].data, "unlisted") == 0) {
             bcf->modern_unlisted_browsers = 1;
             return NGX_CONF_OK;
@@ -556,6 +604,7 @@ ngx_http_modern_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //初始化modern_browsers动态数组
     if (bcf->modern_browsers == NULL) {
         bcf->modern_browsers = ngx_array_create(cf->pool, 5,
                                             sizeof(ngx_http_modern_browser_t));
@@ -564,6 +613,7 @@ ngx_http_modern_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //添加一个元素
     browser = ngx_array_push(bcf->modern_browsers);
     if (browser == NULL) {
         return NGX_CONF_ERROR;
@@ -571,12 +621,14 @@ ngx_http_modern_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     mask = ngx_http_modern_browser_masks;
 
+    //必须以指定的一个值开头
     for (n = 0; mask[n].browser[0] != '\0'; n++) {
         if (ngx_strcasecmp(mask[n].browser, value[1].data) == 0) {
             goto found;
         }
     }
 
+    //否则报错
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                        "unknown browser name \"%V\"", &value[1]);
 
@@ -596,6 +648,7 @@ found:
     ver = 0;
     scale = 1000000;
 
+    //计算version
     for (i = 0; i < value[2].len; i++) {
 
         c = value[2].data[i];
@@ -626,6 +679,11 @@ found:
 }
 
 
+/**
+ * ancient_browser 配置指令解析函数
+ * 
+ * Syntax:	ancient_browser string ...;
+ */
 static char *
 ngx_http_ancient_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -636,12 +694,14 @@ ngx_http_ancient_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    //遍历每一个配置值
     for (i = 1; i < cf->args->nelts; i++) {
         if (ngx_strcmp(value[i].data, "netscape4") == 0) {
             bcf->netscape4 = 1;
             continue;
         }
 
+        //初始化ancient_browsers动态数组
         if (bcf->ancient_browsers == NULL) {
             bcf->ancient_browsers = ngx_array_create(cf->pool, 4,
                                                      sizeof(ngx_str_t));
@@ -650,6 +710,7 @@ ngx_http_ancient_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             }
         }
 
+        //将每一个配置值添加到ancient_browsers中
         browser = ngx_array_push(bcf->ancient_browsers);
         if (browser == NULL) {
             return NGX_CONF_ERROR;
@@ -662,6 +723,12 @@ ngx_http_ancient_browser(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 	modern_browser_value string;
+ * 
+ * Sets a value for the $modern_browser variables.
+ * 
+ */
 static char *
 ngx_http_modern_browser_value(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -681,12 +748,18 @@ ngx_http_modern_browser_value(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     bcf->modern_browser_value->valid = 1;
     bcf->modern_browser_value->no_cacheable = 0;
     bcf->modern_browser_value->not_found = 0;
-    bcf->modern_browser_value->data = value[1].data;
+    bcf->modern_browser_value->data = value[1].data;        //使用原始值，并不涉及变量
 
     return NGX_CONF_OK;
 }
 
 
+/**
+ * 	ancient_browser_value string;
+ * 
+ * Sets a value for the $ancient_browser variables.
+ * 
+ */
 static char *
 ngx_http_ancient_browser_value(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -706,7 +779,7 @@ ngx_http_ancient_browser_value(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     bcf->ancient_browser_value->valid = 1;
     bcf->ancient_browser_value->no_cacheable = 0;
     bcf->ancient_browser_value->not_found = 0;
-    bcf->ancient_browser_value->data = value[1].data;
+    bcf->ancient_browser_value->data = value[1].data;       //使用原始值，并不涉及变量
 
     return NGX_CONF_OK;
 }

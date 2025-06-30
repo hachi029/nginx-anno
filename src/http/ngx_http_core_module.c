@@ -352,6 +352,9 @@ static ngx_command_t  ngx_http_core_commands[] = {
       offsetof(ngx_http_core_loc_conf_t, client_max_body_size),
       NULL },
 
+    //https://nginx.org/en/docs/http/ngx_http_core_module.html#client_body_buffer_size
+    //Sets buffer size for reading client request body
+    //In case the request body is larger than the buffer, the whole body or only its part is written to a temporary file
     { ngx_string("client_body_buffer_size"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
@@ -472,14 +475,14 @@ static ngx_command_t  ngx_http_core_commands[] = {
       offsetof(ngx_http_core_loc_conf_t, send_lowat),
       &ngx_http_core_lowat_post },
 
-    { ngx_string("postpone_output"),
+    { ngx_string("postpone_output"),  //https://nginx.org/en/docs/http/ngx_http_core_module.html#postpone_output
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_core_loc_conf_t, postpone_output),
       NULL },
 
-    { ngx_string("limit_rate"),
+    { ngx_string("limit_rate"), 
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
                         |NGX_CONF_TAKE1,
       ngx_http_set_complex_value_size_slot,
@@ -502,6 +505,7 @@ static ngx_command_t  ngx_http_core_commands[] = {
       offsetof(ngx_http_core_loc_conf_t, keepalive_time),
       NULL },
 
+      //https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_timeout
     { ngx_string("keepalive_timeout"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE12,
       ngx_http_core_keepalive,
@@ -789,6 +793,9 @@ static ngx_command_t  ngx_http_core_commands[] = {
 };
 
 
+/**
+ * 模块上下文结构
+ */
 static ngx_http_module_t  ngx_http_core_module_ctx = {
     ngx_http_core_preconfiguration,        /* preconfiguration */
     ngx_http_core_postconfiguration,       /* postconfiguration */
@@ -804,6 +811,9 @@ static ngx_http_module_t  ngx_http_core_module_ctx = {
 };
 
 
+/**
+ * 第一个http模块
+ */
 ngx_module_t  ngx_http_core_module = {
     NGX_MODULE_V1,
     &ngx_http_core_module_ctx,             /* module context */
@@ -823,6 +833,19 @@ ngx_module_t  ngx_http_core_module = {
 ngx_str_t  ngx_http_core_get_method = { 3, (u_char *) "GET" };
 
 
+/**
+ * 解析完请求头后， ngx_http_process_request->ngx_http_handler
+ *
+ * 主要逻辑是根据是否是interval请求，确定phase_handler，然后调用ngx_http_core_run_phases
+ * 执行流程：
+ * 
+ * 1.检查当前请求 ngx_http_request_t 的 internal 标志位：
+ * 2.若 internal 标志位为 0，表示当前请求不需要重定向，判断是否使用 keepalive 机制，并设置phase_handler 序号为0，表示执行ngx_http_phase_engine_t 结构成员ngx_http_phase_handler_t *handlers数组中的第一个回调方法；
+ * 3.若 internal 标志位为 1，表示需要将当前请求做内部跳转，并将 phase_handler 设置为server_rewriter_index，表示执行ngx_http_phase_engine_t 结构成员ngx_http_phase_handler_t *handlers 数组在NGX_HTTP_SERVER_REWRITE_PHASE 处理阶段的第一个回调方法；
+ * 4.设置当前请求 ngx_http_request_t 的成员写事件write_event_handler 为ngx_http_core_run_phases；
+ * 5.执行n gx_http_core_run_phases 方法；
+ * 
+ **/
 void
 ngx_http_handler(ngx_http_request_t *r)
 {
@@ -830,27 +853,45 @@ ngx_http_handler(ngx_http_request_t *r)
 
     r->connection->log->action = NULL;
 
-    if (!r->internal) {
+    if (!r->internal) {         //非内部请求
         switch (r->headers_in.connection_type) {
-        case 0:
-            r->keepalive = (r->http_version > NGX_HTTP_VERSION_10);
+        case 0:     //未设置connection_type
+            r->keepalive = (r->http_version > NGX_HTTP_VERSION_10); //如果是HTTP/1.1版本，则保持连接
             break;
 
-        case NGX_HTTP_CONNECTION_CLOSE:
+        case NGX_HTTP_CONNECTION_CLOSE:     //如果设置了connection_type为close
             r->keepalive = 0;
             break;
 
-        case NGX_HTTP_CONNECTION_KEEP_ALIVE:
+        case NGX_HTTP_CONNECTION_KEEP_ALIVE:    //如果设置了connection_type为keep-alive
             r->keepalive = 1;
             break;
         }
 
+        //如果请求体的长度大于0或者是分块传输，则设置r->lingering_close为1
         r->lingering_close = (r->headers_in.content_length_n > 0
                               || r->headers_in.chunked);
+
+        //从头开始重新执行
+         /*
+         * phase_handler序号设置为0，表示执行ngx_http_phase_engine_t结构体成员
+         * ngx_http_phase_handler_t *handlers数组中的第一个回调方法；
+         */
         r->phase_handler = 0;
 
     } else {
+        //内部请求，从server_rewrite阶段开始执行
+        /* 获取ngx_http_core_module模块的main级别的配置项结构 */
         cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
+         /*
+         * 将phase_handler序号设为server_rewriter_index，
+         * 该phase_handler序号是作为ngx_http_phase_engine_t结构中成员
+         * ngx_http_phase_handler_t *handlers回调方法数组的序号，
+         * 即表示回调方法在该数组中所处的位置；
+         *
+         * server_rewrite_index则是handlers数组中NGX_HTTP_SERVER_REWRITE_PHASE阶段的
+         * 第一个ngx_http_phase_handler_t回调的方法；
+         */
         r->phase_handler = cmcf->phase_engine.server_rewrite_index;
     }
 
@@ -861,11 +902,26 @@ ngx_http_handler(ngx_http_request_t *r)
     r->gzip_vary = 0;
 #endif
 
+    //设置请求写时间处理函数为ngx_http_core_run_phases
     r->write_event_handler = ngx_http_core_run_phases;
+     /*
+     * 执行该回调方法，将调用各个HTTP模块共同处理当前请求，
+     * 各个HTTP模块按照11个HTTP阶段进行处理；
+     */
     ngx_http_core_run_phases(r);
 }
 
 
+/**
+ * 该方法开始调用各HTTP模块处理请求
+ * 
+ * 根据phase_handler执行请求当前阶段的各个handler
+ * 
+ * 1.判断每个 ngx_http_phase_handler_t 处理阶段是否实现checker 方法：
+ * 2.若实现 checker 方法，则执行 phase_handler 序号在 ngx_http_phase_handler_t *handlers数组中指定的checker 方法；执行完checker 方法，若返回NGX_OK 则退出；若返回非NGX_OK，则继续执行下一个HTTP 模块在该阶段的checker 方法；
+ * 3.若没有实现 checker 方法，则直接退出；
+ * 
+ */
 void
 ngx_http_core_run_phases(ngx_http_request_t *r)
 {
@@ -873,14 +929,21 @@ ngx_http_core_run_phases(ngx_http_request_t *r)
     ngx_http_phase_handler_t   *ph;
     ngx_http_core_main_conf_t  *cmcf;
 
+    /* 获取ngx_http_core_module模块的main级别的配置项结构体 */
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
+    /* 获取各个HTTP模块处理请求的回调方法数组 */
     ph = cmcf->phase_engine.handlers;
 
+    /* 若实现了checker方法 */
     while (ph[r->phase_handler].checker) {
 
+        //checker中实现各http模块的handler方法调用
+        //同一个阶段中的所有handler处理方法都 拥有相同的checker方法
+        //每个阶段中处理方法的返回值都会以不同的方式影响HTTP框架的行为
         rc = ph[r->phase_handler].checker(r, &ph[r->phase_handler]);
 
+        /* 成功执行checker方法，则退出，否则继续执行下一个HTTP模块的checker方法 */
         if (rc == NGX_OK) {
             return;
         }
@@ -888,6 +951,11 @@ ngx_http_core_run_phases(ngx_http_request_t *r)
 }
 
 
+/**
+ * 有3个HTTP阶段都使用了ngx_http_core_generic_phase作为它们的 checker方法
+ *  NGX_HTTP_POST_READ_PHASE、 NGX_HTTP_PREACCESS_PHASE、NGX_HTTP_LOG_PHASE
+ * 
+ */
 ngx_int_t
 ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 {
@@ -900,23 +968,26 @@ ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "generic phase: %ui", r->phase_handler);
-
+    //首先调用HTTP模块实现的handler方法
     rc = ph->handler(r);
 
-    if (rc == NGX_OK) {
+    if (rc == NGX_OK) {     //当前阶段已经执行完毕， 需要跳转到下一个阶段执行
         r->phase_handler = ph->next;
         return NGX_AGAIN;
     }
 
-    if (rc == NGX_DECLINED) {
+    if (rc == NGX_DECLINED) {   //继续执行下个handler
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
+    //handler方法无法在这一次调度中处理完这一个阶段，它需要多次调度才能完成.
+    //如果请求对应的事件再次被触发时，将由ngx_http_request_handler通过ngx_http_core_run_phases再次调用这个handler方法
     if (rc == NGX_AGAIN || rc == NGX_DONE) {
         return NGX_OK;
     }
 
+    //此处表示有错误，结束请求
     /* rc == NGX_ERROR || rc == NGX_HTTP_...  */
 
     ngx_http_finalize_request(r, rc);
@@ -925,6 +996,12 @@ ngx_http_core_generic_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 }
 
 
+/**
+ * 两个阶段的 checker方法
+ * NGX_HTTP_SERVER_REWRITE_PHASE、NGX_HTTP_REWRITE_PHASE
+ * 
+ * 不会导致跨过同一个HTTP阶段的其他处理方法，因为这两个阶段的handler是平等的。
+ */
 ngx_int_t
 ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 {
@@ -935,12 +1012,14 @@ ngx_http_core_rewrite_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 
     rc = ph->handler(r);
 
-    if (rc == NGX_DECLINED) {
+    if (rc == NGX_DECLINED) {   //当前阶段下一个回调方法
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
-    if (rc == NGX_DONE) {
+    //返回NGX_OK，它会使得HTTP框架立刻把控制权交还给epoll等事件模块，不再处理当前请求，
+    //唯有这个请求上的事 件再次被触发时才会继续执行
+    if (rc == NGX_DONE) {   //handler方法无法在这一次调度中 处理完这一个阶段，它需要多次的调度才能完成
         return NGX_OK;
     }
 
@@ -989,18 +1068,20 @@ ngx_http_core_find_config_phase(ngx_http_request_t *r,
                    "http cl:%O max:%O",
                    r->headers_in.content_length_n, clcf->client_max_body_size);
 
+    //如果有content_length请求头，检查content_length是否已大于配置文件中的client_max_body_size
     if (r->headers_in.content_length_n != -1
         && !r->discard_body
         && clcf->client_max_body_size
         && clcf->client_max_body_size < r->headers_in.content_length_n)
     {
+        //大于
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "client intended to send too large body: %O bytes",
                       r->headers_in.content_length_n);
 
         r->expect_tested = 1;
-        (void) ngx_http_discard_request_body(r);
-        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_ENTITY_TOO_LARGE);
+        (void) ngx_http_discard_request_body(r);        //丢掉请求体
+        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_ENTITY_TOO_LARGE);    //返回413
         return NGX_OK;
     }
 
@@ -1090,7 +1171,13 @@ ngx_http_core_post_rewrite_phase(ngx_http_request_t *r,
     return NGX_AGAIN;
 }
 
-
+/**
+ * 仅用于NGX_HTTP_ACCESS_PHASE阶段, 用于控制用户发起的请求是否合法
+ * 
+ * satisfy all | any ; 配置影响本阶段执行
+ * https://nginx.org/en/docs/http/ngx_http_core_module.html#satisfy
+ * 
+ */
 ngx_int_t
 ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 {
@@ -1098,7 +1185,7 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
     ngx_table_elt_t           *h;
     ngx_http_core_loc_conf_t  *clcf;
 
-    if (r != r->main) {
+    if (r != r->main) {     //只有主请求需要执行此阶段
         r->phase_handler = ph->next;
         return NGX_AGAIN;
     }
@@ -1108,36 +1195,41 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 
     rc = ph->handler(r);
 
-    if (rc == NGX_DECLINED) {
+    if (rc == NGX_DECLINED) {       //立刻执行下一 个handler方法
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
+    //没有一次性执行完毕
+    //当请求中对应的事件再次触发时才会继续处理该 请求
     if (rc == NGX_AGAIN || rc == NGX_DONE) {
         return NGX_OK;
     }
 
+    //根据配置项satisfy决定返回值
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-    if (clcf->satisfy == NGX_HTTP_SATISFY_ALL) {
+    if (clcf->satisfy == NGX_HTTP_SATISFY_ALL) {        //需要满足所有此阶段的handler
 
         if (rc == NGX_OK) {
             r->phase_handler++;
             return NGX_AGAIN;
         }
+        //非NGX_OK， 无权访问
 
-    } else {
-        if (rc == NGX_OK) {
+    } else {        //any
+        if (rc == NGX_OK) {     //验证通过，可以访问
             r->access_code = 0;
 
             for (h = r->headers_out.www_authenticate; h; h = h->next) {
                 h->hash = 0;
             }
 
-            r->phase_handler = ph->next;
+            r->phase_handler = ph->next;    //继续下一阶段
             return NGX_AGAIN;
         }
 
+        //当前handler认为无权限，仍需查看其他handler执行结果
         if (rc == NGX_HTTP_FORBIDDEN || rc == NGX_HTTP_UNAUTHORIZED) {
             if (r->access_code != NGX_HTTP_UNAUTHORIZED) {
                 r->access_code = rc;
@@ -1150,6 +1242,7 @@ ngx_http_core_access_phase(ngx_http_request_t *r, ngx_http_phase_handler_t *ph)
 
     /* rc == NGX_ERROR || rc == NGX_HTTP_...  */
 
+    //拒绝访问
     if (rc == NGX_HTTP_UNAUTHORIZED) {
         return ngx_http_core_auth_delay(r);
     }
@@ -1254,7 +1347,9 @@ ngx_http_core_auth_delay_handler(ngx_http_request_t *r)
     ngx_http_finalize_request(r, NGX_HTTP_UNAUTHORIZED);
 }
 
-
+/**
+ * 用于NGX_HTTP_CONTENT_PHASE阶段
+ */
 ngx_int_t
 ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_http_phase_handler_t *ph)
@@ -1263,8 +1358,18 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_int_t  rc;
     ngx_str_t  path;
 
+    //为了加快处理速度，HTTP框架又在ngx_http_request_t结构体中增加了一个成员 content_handler
+    //NGX_HTTP_FIND_CONFIG_PHASE阶段匹配了URI请求的location内，
+    //如果有HTTP模块把处理方法设置到了ngx_http_core_loc_conf_t结构体的handler成员中
     if (r->content_handler) {
+        //为不做任何事的空方法
+        /**
+         * HTTP 框架在这一阶段调用HTTP模块处理请求就意味着接下来只希望该模块处理请求，
+         * 先把 write_event_handler强制转化为ngx_http_request_empty_handler，
+         * 可以防止该HTTP模块异步地 处理请求时却有其他HTTP模块还在同时处理可写事件、向客户端发送响应
+         */
         r->write_event_handler = ngx_http_request_empty_handler;
+        //调用 content_handler方法处理请求，并把它的返回值作为参数传递给ngx_http_finalize_request方法 来结束请求
         ngx_http_finalize_request(r, r->content_handler(r));
         return NGX_OK;
     }
@@ -1272,26 +1377,31 @@ ngx_http_core_content_phase(ngx_http_request_t *r,
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "content phase: %ui", r->phase_handler);
 
+    //没有设置content_handler
     rc = ph->handler(r);
 
-    if (rc != NGX_DECLINED) {
+    //如果NGX_HTTP_CONTENT_PHASE阶段中全局的handler方法没有返回 NGX_DECLINED，则意味着不再执行该阶段的其他handler方法。
+    if (rc != NGX_DECLINED) { 
         ngx_http_finalize_request(r, rc);
         return NGX_OK;
     }
 
+    //希望执行本阶段的下一个handler方法
     /* rc == NGX_DECLINED */
 
     ph++;
-
-    if (ph->checker) {
+    //检测当前的handler方法是否已经是最后一个handler方法
+    if (ph->checker) {      //若存在
         r->phase_handler++;
         return NGX_AGAIN;
     }
 
     /* no content handler was found */
 
+    //如果uri以/结尾
     if (r->uri.data[r->uri.len - 1] == '/') {
 
+        //uri映射为文件
         if (ngx_http_map_uri_to_path(r, &path, &root, 0) != NULL) {
             ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                           "directory index of \"%s\" is forbidden", path.data);
@@ -1399,6 +1509,9 @@ ngx_http_update_location_config(ngx_http_request_t *r)
  * NGX_DECLINED - no match
  */
 
+ /**
+  * 从静态二叉查找树中快速检索到ngx_http_core_loc_conf_t结构体
+  */
 static ngx_int_t
 ngx_http_core_find_location(ngx_http_request_t *r)
 {
@@ -1556,6 +1669,9 @@ ngx_http_core_find_static_location(ngx_http_request_t *r,
 }
 
 
+/**
+ * 测试r的响应头content_type是否在types_hash表示的hash中
+ */
 void *
 ngx_http_test_content_type(ngx_http_request_t *r, ngx_hash_t *types_hash)
 {
@@ -1563,16 +1679,19 @@ ngx_http_test_content_type(ngx_http_request_t *r, ngx_hash_t *types_hash)
     size_t      len;
     ngx_uint_t  i, hash;
 
+    //types_hash 为空
     if (types_hash->size == 0) {
         return (void *) 4;
     }
 
+    //没有content_type响应头
     if (r->headers_out.content_type.len == 0) {
         return NULL;
     }
 
     len = r->headers_out.content_type_len;
 
+    //如果content_type_lowcase为空，进行赋值，同时计算content_type_hash
     if (r->headers_out.content_type_lowcase == NULL) {
 
         lowcase = ngx_pnalloc(r->pool, len);
@@ -1584,6 +1703,7 @@ ngx_http_test_content_type(ngx_http_request_t *r, ngx_hash_t *types_hash)
 
         hash = 0;
 
+        //小写化的同时计算hash
         for (i = 0; i < len; i++) {
             c = ngx_tolower(r->headers_out.content_type.data[i]);
             hash = ngx_hash(hash, c);
@@ -1593,11 +1713,17 @@ ngx_http_test_content_type(ngx_http_request_t *r, ngx_hash_t *types_hash)
         r->headers_out.content_type_hash = hash;
     }
 
+    //hash查找
     return ngx_hash_find(types_hash, r->headers_out.content_type_hash,
                          r->headers_out.content_type_lowcase, len);
 }
 
 
+/**
+ * 设置content_type响应头
+ * 首先根据请求的文件扩展名查找对应的Content-Type，找到则设置。
+ * 如果未找到，设置为默认值
+ */
 ngx_int_t
 ngx_http_set_content_type(ngx_http_request_t *r)
 {
@@ -1606,12 +1732,14 @@ ngx_http_set_content_type(ngx_http_request_t *r)
     ngx_uint_t                 i, hash;
     ngx_http_core_loc_conf_t  *clcf;
 
+    // 如果已经设置了Content-Type响应头，则不再设置
     if (r->headers_out.content_type.len) {
         return NGX_OK;
     }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    //如果有 文件扩展名
     if (r->exten.len) {
 
         hash = 0;
@@ -1619,13 +1747,14 @@ ngx_http_set_content_type(ngx_http_request_t *r)
         for (i = 0; i < r->exten.len; i++) {
             c = r->exten.data[i];
 
+            // 如果扩展名中包含大写字母，将扩展名转为小写，并重新计算hash
             if (c >= 'A' && c <= 'Z') {
 
                 exten = ngx_pnalloc(r->pool, r->exten.len);
                 if (exten == NULL) {
                     return NGX_ERROR;
                 }
-
+                // 将扩展名转换为小写
                 hash = ngx_hash_strlow(exten, r->exten.data, r->exten.len);
 
                 r->exten.data = exten;
@@ -1636,6 +1765,7 @@ ngx_http_set_content_type(ngx_http_request_t *r)
             hash = ngx_hash(hash, c);
         }
 
+        //根据扩展名查找对应的Content-Type
         type = ngx_hash_find(&clcf->types_hash, hash,
                              r->exten.data, r->exten.len);
 
@@ -1647,6 +1777,7 @@ ngx_http_set_content_type(ngx_http_request_t *r)
         }
     }
 
+    //设置为默认的Content-Type
     r->headers_out.content_type_len = clcf->default_type.len;
     r->headers_out.content_type = clcf->default_type;
 
@@ -1654,15 +1785,21 @@ ngx_http_set_content_type(ngx_http_request_t *r)
 }
 
 
+
+/**
+ * 设置请求的文件扩展名
+ * 例如：/path/to/file.txt -> txt
+ * 如果没有扩展名，则设置为NULL
+ */
 void
 ngx_http_set_exten(ngx_http_request_t *r)
 {
     ngx_int_t  i;
 
-    ngx_str_null(&r->exten);
+    ngx_str_null(&r->exten);    //先清空exten
 
-    for (i = r->uri.len - 1; i > 1; i--) {
-        if (r->uri.data[i] == '.' && r->uri.data[i - 1] != '/') {
+    for (i = r->uri.len - 1; i > 1; i--) {      //从后往前遍历uri
+        if (r->uri.data[i] == '.' && r->uri.data[i - 1] != '/') {  // 遇到的第一个.，并且前一个字符不是/
 
             r->exten.len = r->uri.len - i - 1;
             r->exten.data = &r->uri.data[i + 1];
@@ -1678,6 +1815,12 @@ ngx_http_set_exten(ngx_http_request_t *r)
 }
 
 
+/**
+ * 设置ETag响应头
+ * https://nginx.org/en/docs/http/ngx_http_core_module.html#etag
+ * 
+ * 生成ETag值, 计算方式(last_modified_time + content_length_n)的 hex_format
+ */
 ngx_int_t
 ngx_http_set_etag(ngx_http_request_t *r)
 {
@@ -1686,10 +1829,11 @@ ngx_http_set_etag(ngx_http_request_t *r)
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-    if (!clcf->etag) {
+    if (!clcf->etag) {      //etag on | off; 默认为on
         return NGX_OK;
     }
 
+    //响应头里增加 ETag
     etag = ngx_list_push(&r->headers_out.headers);
     if (etag == NULL) {
         return NGX_ERROR;
@@ -1705,6 +1849,8 @@ ngx_http_set_etag(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
+    //生成ETag值, 计算方式last_modified_time + content_length_n hex_format
+    //ngx_sprintf返回值为指向最后一个字符的下一个位置
     etag->value.len = ngx_sprintf(etag->value.data, "\"%xT-%xO\"",
                                   r->headers_out.last_modified_time,
                                   r->headers_out.content_length_n)
@@ -1716,6 +1862,9 @@ ngx_http_set_etag(ngx_http_request_t *r)
 }
 
 
+/**
+ * 如果响应头里有etag, 在etag前增加'W/'字符
+ */
 void
 ngx_http_weak_etag(ngx_http_request_t *r)
 {
@@ -1729,6 +1878,7 @@ ngx_http_weak_etag(ngx_http_request_t *r)
         return;
     }
 
+    //已经以W/开头了
     if (etag->value.len > 2
         && etag->value.data[0] == 'W'
         && etag->value.data[1] == '/')
@@ -1736,12 +1886,14 @@ ngx_http_weak_etag(ngx_http_request_t *r)
         return;
     }
 
+    //无效的etag
     if (etag->value.len < 1 || etag->value.data[0] != '"') {
         r->headers_out.etag->hash = 0;
         r->headers_out.etag = NULL;
         return;
     }
 
+    //分配空间
     p = ngx_pnalloc(r->pool, etag->value.len + 2);
     if (p == NULL) {
         r->headers_out.etag->hash = 0;
@@ -1749,6 +1901,7 @@ ngx_http_weak_etag(ngx_http_request_t *r)
         return;
     }
 
+    //增加W/前缀
     len = ngx_sprintf(p, "W/%V", &etag->value) - p;
 
     etag->value.data = p;
@@ -1756,27 +1909,38 @@ ngx_http_weak_etag(ngx_http_request_t *r)
 }
 
 
+/**
+ * 一个快捷方法
+ * 将计算出的ngx_http_complex_value_t值作为响应体发送给客户端
+ * 
+ * ct: 为响应头content_type
+ * cv: 表示复杂变量，其值作为响应体发送回客户端
+ */
 ngx_int_t
 ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
     ngx_str_t *ct, ngx_http_complex_value_t *cv)
 {
     ngx_int_t     rc;
-    ngx_str_t     val;
+    ngx_str_t     val;      //解析出来的变量值
     ngx_buf_t    *b;
     ngx_chain_t   out;
 
+    //丢弃请求体
     rc = ngx_http_discard_request_body(r);
 
     if (rc != NGX_OK) {
         return rc;
     }
 
+    //设置响应状态码
     r->headers_out.status = status;
 
+    //计算变量值
     if (ngx_http_complex_value(r, cv, &val) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    //重定向响应
     if (status == NGX_HTTP_MOVED_PERMANENTLY
         || status == NGX_HTTP_MOVED_TEMPORARILY
         || status == NGX_HTTP_SEE_OTHER
@@ -1793,13 +1957,15 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
         r->headers_out.location->hash = 1;
         r->headers_out.location->next = NULL;
         ngx_str_set(&r->headers_out.location->key, "Location");
-        r->headers_out.location->value = val;
+        r->headers_out.location->value = val;       //value为响应头Location值
 
         return status;
     }
 
+    //设置响应体长度
     r->headers_out.content_length_n = val.len;
 
+    //设置响应content_type
     if (ct) {
         r->headers_out.content_type_len = ct->len;
         r->headers_out.content_type = *ct;
@@ -1815,7 +1981,7 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    b->pos = val.data;
+    b->pos = val.data;      //b指向value
     b->last = val.data + val.len;
     b->memory = val.len ? 1 : 0;
     b->last_buf = (r == r->main) ? 1 : 0;
@@ -1825,16 +1991,22 @@ ngx_http_send_response(ngx_http_request_t *r, ngx_uint_t status,
     out.buf = b;
     out.next = NULL;
 
+    //发送响应头
     rc = ngx_http_send_header(r);
 
     if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
         return rc;
     }
 
+    //发送响应体
     return ngx_http_output_filter(r, &out);
 }
 
 
+/**
+ * 发送请求header到客户端 , 调用ngx_http_top_header_filter， 启动header_filter流程
+ * 最后一个header_filter  ngx_http_header_filter 负责构建响应行、响应头buf, 发送出去
+ */
 ngx_int_t
 ngx_http_send_header(ngx_http_request_t *r)
 {
@@ -1842,6 +2014,7 @@ ngx_http_send_header(ngx_http_request_t *r)
         return NGX_OK;
     }
 
+    //已经发送过响应头了
     if (r->header_sent) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
                       "header already sent");
@@ -1853,10 +2026,16 @@ ngx_http_send_header(ngx_http_request_t *r)
         r->headers_out.status_line.len = 0;
     }
 
+    //启动header_filter, filter最后的方法是 ngx_http_header_filter
     return ngx_http_top_header_filter(r);
 }
 
 
+/**
+ * 在自定义模块中调用此方法即可向客户端发送响应体
+ * 发送请求body, 通过ngx_http_top_body_filter激活body_filter
+ * 
+ */
 ngx_int_t
 ngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t *in)
 {
@@ -1879,6 +2058,13 @@ ngx_http_output_filter(ngx_http_request_t *r, ngx_chain_t *in)
 }
 
 
+/**
+ * 将请求的uri映射到本地文件系统的路径
+ * 例如：/path/to/file.txt -> /usr/local/nginx/html/path/to/file.txt
+ * reserved: 一般为0， 为额外申请的内存空间，应用场景如：可以在后边添加后缀
+ * path 为映射后的路径
+ * 返回的last为映射后的路径的最后一个字符的下一个位置
+ */
 u_char *
 ngx_http_map_uri_to_path(ngx_http_request_t *r, ngx_str_t *path,
     size_t *root_length, size_t reserved)
@@ -1889,7 +2075,7 @@ ngx_http_map_uri_to_path(ngx_http_request_t *r, ngx_str_t *path,
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
-    alias = clcf->alias;
+    alias = clcf->alias;    //实际alias所在location的name的长度
 
     if (alias && !r->valid_location) {
         ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
@@ -1898,20 +2084,30 @@ ngx_http_map_uri_to_path(ngx_http_request_t *r, ngx_str_t *path,
         return NULL;
     }
 
-    if (clcf->root_lengths == NULL) {
+    if (clcf->root_lengths == NULL) {       //  root或alias里没有配置变量
 
+        //	默认 root html;
+        // clcf->root 为 html目录的全路径
         *root_length = clcf->root.len;
 
-        path->len = clcf->root.len + reserved + r->uri.len - alias + 1;
+        /**
+         * location /i/ {
+            root /data/w3;
+           }
+           /data/w3/i/top.gif file will be sent in response to the “/i/top.gif"
+           r->uri 为请求的uri, 如/random_index/
+         */
+        path->len = clcf->root.len + reserved + r->uri.len - alias + 1; //计算path.len
 
         path->data = ngx_pnalloc(r->pool, path->len);
         if (path->data == NULL) {
             return NULL;
         }
 
+        //copy root到path
         last = ngx_copy(path->data, clcf->root.data, clcf->root.len);
 
-    } else {
+    } else {     //  root或alias里有配置变量的场景
 
         if (alias == NGX_MAX_SIZE_T_VALUE) {
             reserved += r->add_uri_to_alias ? r->uri.len + 1 : 1;
@@ -1946,6 +2142,7 @@ ngx_http_map_uri_to_path(ngx_http_request_t *r, ngx_str_t *path,
         }
     }
 
+    //copy uri到path
     last = ngx_copy(last, r->uri.data + alias, r->uri.len - alias);
     *last = '\0';
 
@@ -1953,16 +2150,22 @@ ngx_http_map_uri_to_path(ngx_http_request_t *r, ngx_str_t *path,
 }
 
 
+/**
+ * 尝试从请求头authorization中解析用户名
+ * 如果解析成功，用户名将被放到 r->headers_in.user
+ */
 ngx_int_t
 ngx_http_auth_basic_user(ngx_http_request_t *r)
 {
     ngx_str_t   auth, encoded;
     ngx_uint_t  len;
 
+    //User请求头已经被设置了
     if (r->headers_in.user.len == 0 && r->headers_in.user.data != NULL) {
         return NGX_DECLINED;
     }
 
+    //如果没有携带authorization请求头
     if (r->headers_in.authorization == NULL) {
         r->headers_in.user.data = (u_char *) "";
         return NGX_DECLINED;
@@ -1970,6 +2173,7 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
 
     encoded = r->headers_in.authorization->value;
 
+    //长度校验，如果不合法，直接返回
     if (encoded.len < sizeof("Basic ") - 1
         || ngx_strncasecmp(encoded.data, (u_char *) "Basic ",
                            sizeof("Basic ") - 1)
@@ -1992,6 +2196,7 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
+    //base64 decode
     auth.len = ngx_base64_decoded_length(encoded.len);
     auth.data = ngx_pnalloc(r->pool, auth.len + 1);
     if (auth.data == NULL) {
@@ -2005,17 +2210,20 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
 
     auth.data[auth.len] = '\0';
 
+    //:分割，username:password
     for (len = 0; len < auth.len; len++) {
         if (auth.data[len] == ':') {
             break;
         }
     }
 
+    //username非法
     if (len == 0 || len == auth.len) {
         r->headers_in.user.data = (u_char *) "";
         return NGX_DECLINED;
     }
 
+    //往请求头里设置user和passwd
     r->headers_in.user.len = len;
     r->headers_in.user.data = auth.data;
     r->headers_in.passwd.len = auth.len - len - 1;
@@ -2027,6 +2235,9 @@ ngx_http_auth_basic_user(ngx_http_request_t *r)
 
 #if (NGX_HTTP_GZIP)
 
+/**
+ * 根据客户端请求头以及服务端配置，判断客户端是否支持gzip响应
+ */
 ngx_int_t
 ngx_http_gzip_ok(ngx_http_request_t *r)
 {
@@ -2037,7 +2248,7 @@ ngx_http_gzip_ok(ngx_http_request_t *r)
 
     r->gzip_tested = 1;
 
-    if (r != r->main) {
+    if (r != r->main) {     //非主请求
         return NGX_DECLINED;
     }
 
@@ -2059,6 +2270,7 @@ ngx_http_gzip_ok(ngx_http_request_t *r)
      *   Opera:   "gzip, deflate"
      */
 
+    //客户端是否支持gzip
     if (ngx_memcmp(ae->value.data, "gzip,", 5) != 0
         && ngx_http_gzip_accept_encoding(&ae->value) != NGX_OK)
     {
@@ -2075,10 +2287,12 @@ ngx_http_gzip_ok(ngx_http_request_t *r)
         return NGX_DECLINED;
     }
 
+    //via 请求头或响应头是由 proxy添加的
     if (r->headers_in.via == NULL) {
         goto ok;
     }
 
+    //https://nginx.org/en/docs/http/ngx_http_gzip_module.html#gzip_proxied
     p = clcf->gzip_proxied;
 
     if (p & NGX_HTTP_GZIP_PROXIED_OFF) {
@@ -2194,6 +2408,11 @@ ok:
  *     "gzip; q=0" ... "gzip; q=0.000", and for any invalid cases
  */
 
+ /**
+  * 判断浏览器是否支持gzip
+  * 返回 NGX_OK 支持
+  * 返回 NGX_DECLINED 不支持
+  */
 static ngx_int_t
 ngx_http_gzip_accept_encoding(ngx_str_t *ae)
 {
@@ -2318,6 +2537,33 @@ ngx_http_gzip_quantity(u_char *p, u_char *last)
 #endif
 
 
+/**
+ * 使用subrequest的方式:
+ * 1)启动subrequest子请求   ngx_http_subrequest
+ * 2)实现子请求执行结束时的回调方法 ngx_http_post_subreq
+ * 3)实现父请求被激活时的回调方法 
+ * 
+ * 
+ * 创建子请求
+ * r: 父请求
+ * uri args 子请求参数
+ * psr: 指针将生成的子请求传递出去
+ * ps: 指出子请求结束后的回调方法
+ * flags: flag的取值范围包括：常用的为subrequest_in_memory
+ * ①0。在没有特殊需求的情况下都应该填写它； 
+ * ②NGX_HTTP_SUBREQUEST_IN_MEMORY。这个宏会将子请求的subrequest_in_memory标志位置为1，
+ *      这意味着如果子请求使用upstream访问上游服务器，那么上游服务器的响应都将会在内存中处理；
+ * ③NGX_HTTP_SUBREQUEST_WAITED。这个宏会将子请求的waited标志位 置为1，当子请求提前结束时，
+ *   有个done标志位会置为1，但目前HTTP框架并没有针对这两 个标志位做任何实质性处理。注意，flag是按比特位操作的，这样可以同时含有上述3个值。
+ * 
+ * 返回值：
+ * NGX_OK:the subrequest finished without touching the network（成功建立子请求）；
+ * NGX_DONE:the client reset the network connection（客户端重置网络连接）；
+ * NGX_ERROR:there was a server error of some sort（建立子请求失败）；
+ * NGX_AGAIN:the subrequest requires network activity（子请求需要激活网络）；
+ * 
+ * 
+ */
 ngx_int_t
 ngx_http_subrequest(ngx_http_request_t *r,
     ngx_str_t *uri, ngx_str_t *args, ngx_http_request_t **psr,
@@ -2330,6 +2576,8 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_http_posted_request_t     *posted;
     ngx_http_postponed_request_t  *pr, *p;
 
+    // 首先检查本请求的子请求层次
+    // 减到0即已经50层调用了，不能再创建
     if (r->subrequests == 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "subrequests cycle while processing \"%V\"", uri);
@@ -2339,6 +2587,9 @@ ngx_http_subrequest(ngx_http_request_t *r,
     /*
      * 1000 is reserved for other purposes.
      */
+    // 使用主请求里的引用计数限制子请求总数
+    // 1000保留给其他关联操作
+    // 子请求数量最多是65535 - 1000
     if (r->main->count >= 65535 - 1000) {
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
                       "request reference counter overflow "
@@ -2346,33 +2597,40 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    // 已经设置标志位的请求，不允许再发起子请求, 防止过多数据在内存中
     if (r->subrequest_in_memory) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "nested in-memory subrequest \"%V\"", uri);
         return NGX_ERROR;
     }
 
+    //创建子请求的ngx_http_request_t
     sr = ngx_pcalloc(r->pool, sizeof(ngx_http_request_t));
     if (sr == NULL) {
         return NGX_ERROR;
     }
 
+    /* 设置为 HTTP 模块 */
     sr->signature = NGX_HTTP_MODULE;
 
+    // 使用父请求的连接对象
     c = r->connection;
     sr->connection = c;
 
+    //创建子请求的自定义ctx数组
     sr->ctx = ngx_pcalloc(r->pool, sizeof(void *) * ngx_http_max_module);
     if (sr->ctx == NULL) {
         return NGX_ERROR;
     }
 
+    //初始化子请求的headers_out，该链表存储待发送的http响应包体
     if (ngx_list_init(&sr->headers_out.headers, r->pool, 20,
                       sizeof(ngx_table_elt_t))
         != NGX_OK)
     {
         return NGX_ERROR;
     }
+
 
     if (ngx_list_init(&sr->headers_out.trailers, r->pool, 4,
                       sizeof(ngx_table_elt_t))
@@ -2381,36 +2639,47 @@ ngx_http_subrequest(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
+    //创建子请求结构体
     posted = ngx_palloc(r->pool, sizeof(ngx_http_posted_request_t));
     if (posted == NULL) {
         return NGX_ERROR;
     }
 
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
+    //子请求各级别的配置结构体
     sr->main_conf = cscf->ctx->main_conf;
     sr->srv_conf = cscf->ctx->srv_conf;
     sr->loc_conf = cscf->ctx->loc_conf;
 
+    /* 设置内存池 */
     sr->pool = r->pool;
 
+    // 直接使用父请求的头
+    // 如果子请求改写头就可能有隐患
     sr->headers_in = r->headers_in;
 
+    // 清除不必要的头
     ngx_http_clear_content_length(sr);
     ngx_http_clear_accept_ranges(sr);
     ngx_http_clear_last_modified(sr);
 
+    //使用父请求的请求体
     sr->request_body = r->request_body;
 
 #if (NGX_HTTP_V2)
     sr->stream = r->stream;
 #endif
 
+    // 子请求的方法默认是get，但创建后可以改
     sr->method = NGX_HTTP_GET;
+    // http版本使用父请求，可以改
     sr->http_version = r->http_version;
 
+    // 请求行复用
     sr->request_line = r->request_line;
     sr->uri = *uri;
 
+    /* uri中的参数 */
     if (args) {
         sr->args = *args;
     }
@@ -2418,6 +2687,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http subrequest \"%V?%V\"", uri, &sr->args);
 
+    //如果参数flags有NGX_HTTP_SUBREQUEST_IN_MEMORY标识    
     sr->subrequest_in_memory = (flags & NGX_HTTP_SUBREQUEST_IN_MEMORY) != 0;
     sr->waited = (flags & NGX_HTTP_SUBREQUEST_WAITED) != 0;
     sr->background = (flags & NGX_HTTP_SUBREQUEST_BACKGROUND) != 0;
@@ -2429,20 +2699,31 @@ ngx_http_subrequest(ngx_http_request_t *r,
 
     ngx_http_set_exten(sr);
 
+    //main指向主请求
     sr->main = r->main;
+    //parent指向r
     sr->parent = r;
-    sr->post_subrequest = ps;
+    //post_subrequest 是自定义模块中创建的 ngx_http_post_subrequest_t， 参考ngx_http_mytest模块
+    //post_subrequest 主要是一个回调函数
+    sr->post_subrequest = ps;       //子请求结束，会回调ps.handler  ps.handler 实际为 mytest_subrequest_post_handler
     sr->read_event_handler = ngx_http_request_empty_handler;
-    sr->write_event_handler = ngx_http_handler;
+    //ngx_http_run_posted_requests 会循环遍历执行主请求上的posted_requests 的 write_event_handler
+    //ngx_http_handler为读取完客户端请求头后执行的方法
+    sr->write_event_handler = ngx_http_handler;     //这里设置的是子请求的write_event_handler
 
+    // 变量直接复用父请求，改写也可能有隐患
     sr->variables = r->variables;
 
+    /* 日志处理方法 */
     sr->log_handler = r->log_handler;
 
     if (sr->subrequest_in_memory) {
         sr->filter_need_in_memory = 1;
     }
 
+    // 不是在后台，就加入主请求的延后处理队列
+    // 需要完成后由主请求处理
+    // 后台子请求不关心处理结果
     if (!sr->background) {
         pr = ngx_palloc(r->pool, sizeof(ngx_http_postponed_request_t));
         if (pr == NULL) {
@@ -2457,6 +2738,7 @@ ngx_http_subrequest(ngx_http_request_t *r,
             c->data = sr;
         }
 
+        //将pr加入父请求的postponed队列
         if (r->postponed) {
             for (p = r->postponed; p->next; p = p->next) { /* void */ }
             p->next = pr;
@@ -2466,19 +2748,25 @@ ngx_http_subrequest(ngx_http_request_t *r,
         }
     }
 
+    /* 子请求为内部请求 */
     sr->internal = 1;
 
+     /* 继承父请求的部分状态 */
     sr->discard_body = r->discard_body;
     sr->expect_tested = 1;
     sr->main_filter_need_in_memory = r->main_filter_need_in_memory;
 
     sr->uri_changes = NGX_HTTP_MAX_URI_CHANGES + 1;
+    // 关键点，不是操作主请求，而是操作父请求
+    // 这样子请求的数量就没有限制，只有调用层次的限制
     sr->subrequests = r->subrequests - 1;
 
+    // 重新设置子请求的开始时间
     tp = ngx_timeofday();
     sr->start_sec = tp->sec;
     sr->start_msec = tp->msec;
 
+    // 原始请求引用计数增加，对应前面65535 - 1000
     r->main->count++;
 
     *psr = sr;
@@ -2504,10 +2792,15 @@ ngx_http_subrequest(ngx_http_request_t *r,
         ngx_http_update_location_config(sr);
     }
 
+    //将该子请求挂载到原始请求的posted_requests链表队尾
+    // 等待引擎调度运行
     return ngx_http_post_request(sr, posted);
 }
 
 
+/**
+ * 内部重定向
+ */
 ngx_int_t
 ngx_http_internal_redirect(ngx_http_request_t *r,
     ngx_str_t *uri, ngx_str_t *args)
@@ -2516,7 +2809,7 @@ ngx_http_internal_redirect(ngx_http_request_t *r,
 
     r->uri_changes--;
 
-    if (r->uri_changes == 0) {
+    if (r->uri_changes == 0) {      //重定向次数超过限制
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "rewrite or internal redirection cycle "
                       "while internally redirecting to \"%V\"", uri);
@@ -2538,6 +2831,7 @@ ngx_http_internal_redirect(ngx_http_request_t *r,
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "internal redirect: \"%V?%V\"", uri, &r->args);
 
+    // 重新设置请求的文件扩展名
     ngx_http_set_exten(r);
 
     /* clear the modules contexts */
@@ -2552,10 +2846,10 @@ ngx_http_internal_redirect(ngx_http_request_t *r,
     r->cache = NULL;
 #endif
 
-    r->internal = 1;
+    r->internal = 1;                // 内部重定向标识
     r->valid_unparsed_uri = 0;
     r->add_uri_to_alias = 0;
-    r->main->count++;
+    r->main->count++;             //增加引用计数  
 
     ngx_http_handler(r);
 
@@ -2638,7 +2932,10 @@ ngx_http_named_location(ngx_http_request_t *r, ngx_str_t *name)
     return NGX_DONE;
 }
 
-
+/**
+ * 添加清理函数，插入到r->cleanup链表头部
+ * size 为申请ngx_http_cleanup_t指向的data成员的内存
+ */
 ngx_http_cleanup_t *
 ngx_http_cleanup_add(ngx_http_request_t *r, size_t size)
 {
@@ -2672,12 +2969,17 @@ ngx_http_cleanup_add(ngx_http_request_t *r, size_t size)
     return cln;
 }
 
-
+/**
+ * 设置of的标志位disable_symlinks，是否禁用符号连接
+ * path 为文件路径
+ * of 为打开文件信息
+ */
+//https://nginx.org/en/docs/http/ngx_http_core_module.html#disable_symlinks
 ngx_int_t
 ngx_http_set_disable_symlinks(ngx_http_request_t *r,
     ngx_http_core_loc_conf_t *clcf, ngx_str_t *path, ngx_open_file_info_t *of)
 {
-#if (NGX_HAVE_OPENAT)
+#if (NGX_HAVE_OPENAT)       //是否支持openat
     u_char     *p;
     ngx_str_t   from;
 
@@ -2687,6 +2989,7 @@ ngx_http_set_disable_symlinks(ngx_http_request_t *r,
         return NGX_OK;
     }
 
+    //执行脚本获取from值
     if (ngx_http_complex_value(r, clcf->disable_symlinks_from, &from)
         != NGX_OK)
     {
@@ -2723,6 +3026,15 @@ ngx_http_set_disable_symlinks(ngx_http_request_t *r,
 }
 
 
+/**
+ * 从请求头中解析客户端真实ip
+ * addr: 为出参
+ * heders: 为链表，支持多个同名请求头
+ * value: 只支持单个请求头的场景，如x-real-ip
+ * proxies: rlcf->from , 为set_real_ip_from配置指令的多个配置值
+ * recursive: on/off
+ * 
+ */
 ngx_int_t
 ngx_http_get_forwarded_addr(ngx_http_request_t *r, ngx_addr_t *addr,
     ngx_table_elt_t *headers, ngx_str_t *value, ngx_array_t *proxies,
@@ -2733,11 +3045,13 @@ ngx_http_get_forwarded_addr(ngx_http_request_t *r, ngx_addr_t *addr,
     ngx_table_elt_t  *h, *next;
 
     if (headers == NULL) {
+        //从value中查找
         return ngx_http_get_forwarded_addr_internal(r, addr, value->data,
                                                     value->len, proxies,
                                                     recursive);
     }
 
+    //倒序header
     /* revert headers order */
 
     for (h = headers, headers = NULL; h; h = next) {
@@ -2753,6 +3067,7 @@ ngx_http_get_forwarded_addr(ngx_http_request_t *r, ngx_addr_t *addr,
     found = 0;
 
     for (h = headers; h; h = h->next) {
+        //从header值中查找
         rc = ngx_http_get_forwarded_addr_internal(r, addr, h->value.data,
                                                   h->value.len, proxies,
                                                   recursive);
@@ -2785,6 +3100,13 @@ ngx_http_get_forwarded_addr(ngx_http_request_t *r, ngx_addr_t *addr,
 }
 
 
+/**
+ * 从请求头中获取真实IP
+ * addr：出参
+ * xff：xff 字符数组
+ * xfflen： 字符数组长度
+ * proxies： set_real_ip_from 配置指令，元素类型为 ngx_cidr_t
+ */
 static ngx_int_t
 ngx_http_get_forwarded_addr_internal(ngx_http_request_t *r, ngx_addr_t *addr,
     u_char *xff, size_t xfflen, ngx_array_t *proxies, int recursive)
@@ -2797,16 +3119,22 @@ ngx_http_get_forwarded_addr_internal(ngx_http_request_t *r, ngx_addr_t *addr,
 
     do {
 
+        //addr->sockaddr 原始值为c->sockaddr， 先判断对端地址
         if (ngx_cidr_match(addr->sockaddr, proxies) != NGX_OK) {
+            //表示未匹配到proxies中的cidr
             return found ? NGX_DONE : NGX_DECLINED;
         }
 
+        //如果匹配到，说明不是客户端ip, 继续向前匹配
+
+        //从后往前查找第一个非' '且非','的字符， 去除xfflen表示的无效字符
         for (p = xff + xfflen - 1; p > xff; p--, xfflen--) {
             if (*p != ' ' && *p != ',') {
                 break;
             }
         }
 
+        //继续从后向前找到' '或','
         for ( /* void */ ; p > xff; p--) {
             if (*p == ' ' || *p == ',') {
                 p++;
@@ -2814,6 +3142,7 @@ ngx_http_get_forwarded_addr_internal(ngx_http_request_t *r, ngx_addr_t *addr,
             }
         }
 
+        //解析为ngx_addr_t
         if (ngx_parse_addr_port(r->pool, &paddr, p, xfflen - (p - xff))
             != NGX_OK)
         {
@@ -2904,6 +3233,9 @@ ngx_http_link_multi_headers(ngx_http_request_t *r)
 }
 
 
+/**
+ * 配置块server{}解析函数
+ */
 static char *
 ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 {
@@ -2920,16 +3252,19 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     ngx_http_core_srv_conf_t    *cscf, **cscfp;
     ngx_http_core_main_conf_t   *cmcf;
 
+    /* 分配HTTP框架的上下文结构ngx_http_conf_ctx_t */
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* 其中main_conf将指向所属于http{}块下ngx_http_conf_ctx_t 结构体的main_conf指针数组 */
     http_ctx = cf->ctx;
     ctx->main_conf = http_ctx->main_conf;
 
     /* the server{}'s srv_conf */
 
+    /* 分配存储HTTP模块srv级别下的srv_conf配置项空间 */
     ctx->srv_conf = ngx_pcalloc(cf->pool, sizeof(void *) * ngx_http_max_module);
     if (ctx->srv_conf == NULL) {
         return NGX_CONF_ERROR;
@@ -2937,11 +3272,13 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     /* the server{}'s loc_conf */
 
+    /* 分配存储HTTP模块srv级别下的loc_conf配置项空间 */
     ctx->loc_conf = ngx_pcalloc(cf->pool, sizeof(void *) * ngx_http_max_module);
     if (ctx->loc_conf == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /* 遍历所有HTTP模块，为每个模块创建srv级别的配置项结构srv_conf、loc_conf */
     for (i = 0; cf->cycle->modules[i]; i++) {
         if (cf->cycle->modules[i]->type != NGX_HTTP_MODULE) {
             continue;
@@ -2949,6 +3286,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
         module = cf->cycle->modules[i]->ctx;
 
+        /* 调用create_srv_conf创建srv级别的配置项结构srv_conf */
         if (module->create_srv_conf) {
             mconf = module->create_srv_conf(cf);
             if (mconf == NULL) {
@@ -2958,6 +3296,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
             ctx->srv_conf[cf->cycle->modules[i]->ctx_index] = mconf;
         }
 
+        /* 调用create_loc_conf创建srv级别的配置项结构loc_conf */
         if (module->create_loc_conf) {
             mconf = module->create_loc_conf(cf);
             if (mconf == NULL) {
@@ -2969,6 +3308,10 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     }
 
 
+     /*
+     * 将属于当前server{}块的ngx_http_core_srv_conf_t 添加到
+     * 结构体ngx_http_core_main_conf_t成员servers的动态数组中；
+     */
     /* the server configuration context */
 
     cscf = ctx->srv_conf[ngx_http_core_module.ctx_index];
@@ -2985,6 +3328,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     *cscfp = cscf;
 
 
+    /* 解析当前server{}块下的全部srv级别的配置项 */
     /* parse inside server{} */
 
     pcf = *cf;
@@ -2993,6 +3337,7 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     rv = ngx_conf_parse(cf, NULL);
 
+    /* 设置listen监听端口 */
     *cf = pcf;
 
     if (rv == NGX_CONF_OK && !cscf->listen) {
@@ -3049,6 +3394,9 @@ ngx_http_core_server(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 }
 
 
+/**
+ * 解析配置块 location
+ */
 static char *
 ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 {
@@ -3062,20 +3410,27 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     ngx_http_conf_ctx_t       *ctx, *pctx;
     ngx_http_core_loc_conf_t  *clcf, *pclcf;
 
+    /* 分配HTTP框架的上下文结构ngx_http_conf_ctx_t */
     ctx = ngx_pcalloc(cf->pool, sizeof(ngx_http_conf_ctx_t));
     if (ctx == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    /*
+     * 其中main_conf、srv_conf将指向所属于server{}块下ngx_http_conf_ctx_t 结构体
+     * 的main_conf、srv_conf指针数组；
+     */
     pctx = cf->ctx;
     ctx->main_conf = pctx->main_conf;
     ctx->srv_conf = pctx->srv_conf;
 
+    /* 分配存储HTTP模块loc级别下的loc_conf配置项空间 */
     ctx->loc_conf = ngx_pcalloc(cf->pool, sizeof(void *) * ngx_http_max_module);
     if (ctx->loc_conf == NULL) {
         return NGX_CONF_ERROR;
     }
 
+     /* 遍历所有HTTP模块，为每个模块创建loc级别的配置项结构体loc_conf */
     for (i = 0; cf->cycle->modules[i]; i++) {
         if (cf->cycle->modules[i]->type != NGX_HTTP_MODULE) {
             continue;
@@ -3083,9 +3438,11 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
         module = cf->cycle->modules[i]->ctx;
 
+        /* 调用模块的create_loc_conf创建loc级别的配置项结构体loc_conf */
         if (module->create_loc_conf) {
             ctx->loc_conf[cf->cycle->modules[i]->ctx_index] =
                                                    module->create_loc_conf(cf);
+            /* 将loc_conf配置项结构体按照ctx_index顺序保存到loc_conf指针数组中 */
             if (ctx->loc_conf[cf->cycle->modules[i]->ctx_index] == NULL) {
                 return NGX_CONF_ERROR;
             }
@@ -3097,6 +3454,7 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
 
     value = cf->args->elts;
 
+    /* 以下是对正则表达式的处理 */
     if (cf->args->nelts == 3) {
 
         len = value[1].len;
@@ -3227,6 +3585,7 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
         }
     }
 
+    /* 将ngx_http_location_queue_t添加到双向链表中 */
     if (ngx_http_add_location(cf, &pclcf->locations, clcf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -3235,6 +3594,7 @@ ngx_http_core_location(ngx_conf_t *cf, ngx_command_t *cmd, void *dummy)
     cf->ctx = ctx;
     cf->cmd_type = NGX_HTTP_LOC_CONF;
 
+    /* 解析当前location{}块下的所有loc级别配置项 */
     rv = ngx_conf_parse(cf, NULL);
 
     *cf = save;
@@ -3375,10 +3735,13 @@ ngx_http_core_type(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     return NGX_CONF_OK;
 }
 
-
+/**
+ * ngx_http_core_module的preconfiguration方法
+ */
 static ngx_int_t
 ngx_http_core_preconfiguration(ngx_conf_t *cf)
 {
+    //变量初始化
     return ngx_http_variables_add_core_vars(cf);
 }
 
@@ -3392,6 +3755,9 @@ ngx_http_core_postconfiguration(ngx_conf_t *cf)
 }
 
 
+/**
+ * 创建模块main级别配置结构体  ngx_http_core_main_conf_t
+ */
 static void *
 ngx_http_core_create_main_conf(ngx_conf_t *cf)
 {
@@ -3419,6 +3785,9 @@ ngx_http_core_create_main_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 初始化模块main级别配置结构体  ngx_http_core_main_conf_t
+ */
 static char *
 ngx_http_core_init_main_conf(ngx_conf_t *cf, void *conf)
 {
@@ -3446,6 +3815,9 @@ ngx_http_core_init_main_conf(ngx_conf_t *cf, void *conf)
 }
 
 
+/**
+ * 创建模块server级别配置结构体  ngx_http_core_srv_conf_t
+ */
 static void *
 ngx_http_core_create_srv_conf(ngx_conf_t *cf)
 {
@@ -3484,6 +3856,9 @@ ngx_http_core_create_srv_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 合并模块server级别配置结构体  ngx_http_core_srv_conf_t
+ */
 static char *
 ngx_http_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -3557,6 +3932,10 @@ ngx_http_core_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 
+ * 创建模块location级别配置结构体  ngx_http_core_loc_conf_t
+ */
 static void *
 ngx_http_core_create_loc_conf(ngx_conf_t *cf)
 {
@@ -3679,6 +4058,9 @@ static ngx_hash_key_t  ngx_http_core_default_types[] = {
 };
 
 
+/**
+ * 合并模块location级别配置结构体  ngx_http_core_loc_conf_t
+ */
 static char *
 ngx_http_core_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -3689,15 +4071,16 @@ ngx_http_core_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_hash_key_t   *type;
     ngx_hash_init_t   types_hash;
 
-    if (conf->root.data == NULL) {
+    //合并 root 配置项
+    if (conf->root.data == NULL) {  //如果当前层级没配置root或alias， 使用上级的。否则使用本级的。
 
         conf->alias = prev->alias;
         conf->root = prev->root;
         conf->root_lengths = prev->root_lengths;
         conf->root_values = prev->root_values;
 
-        if (prev->root.data == NULL) {
-            ngx_str_set(&conf->root, "html");
+        if (prev->root.data == NULL) {      //如果上级没有配置， 设置默认值
+            ngx_str_set(&conf->root, "html");       //默认值为 "html"
 
             if (ngx_conf_full_name(cf->cycle, &conf->root, 0) != NGX_OK) {
                 return NGX_CONF_ERROR;
@@ -4497,7 +4880,35 @@ ngx_http_core_server_name(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     return NGX_CONF_OK;
 }
 
+/**
+ * root指令与alias指令的区别：
+ * 
+ * 1.root 指令：
+    - root 用于指定服务器上文件的根目录。Nginx 将请求的 URI 直接添加到这个根目录路径后面，来找到文件或目录的绝对路径。
+    - 例如，如果配置是 root /data/www;，那么请求 /images/picture.jpg 会被解析为 /data/www/images/picture.jpg。
+   
+   2.alias 指令：
+    - alias 用于将特定的请求 URI 映射到服务器上的一个文件或目录，但它并不像 root 那样自动添加 URI。
+    - 当使用 alias 时，Nginx 会替换匹配的部分 URI，并用 alias 指定的路径代替。
+    - 例如，配置 location /images/ { alias /data/photos/; } 意味着请求 /images/picture.jpg 会被解析为 /data/photos/picture.jpg。
+      注意，alias 指令后面的路径不自动加上请求的 URI 剩余部分。
 
+   
+   3.alias与其所在的location有关
+
+    root与alias主要区别在于nginx如何解释location后面的uri，这会使两者分别以不同的方式将请求映射到服务器文件上。
+    - root的处理结果是：root路径＋location路径
+    - alias的处理结果是：使用alias路径替换location路径
+
+ */
+
+
+/**
+ *  处理root和alias配置指令
+ * 
+ *  不管是alias还是root配置指令，都配置的是 clcf->root 字段。对于alias 指令， 会有clcf->alias标识当前location的name长度
+ * 
+ */
 static char *
 ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -4508,11 +4919,12 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_uint_t                  n;
     ngx_http_script_compile_t   sc;
 
+    //当前配置是root还是alias
     alias = (cmd->name.len == sizeof("alias") - 1) ? 1 : 0;
 
-    if (clcf->root.data) {
+    if (clcf->root.data) {      //判断当前location是否已经配置过了 (同一个location下 root和alias不能同时出现)
 
-        if ((clcf->alias != 0) == alias) {
+        if ((clcf->alias != 0) == alias) {      //当前location已经解析过alias了
             return "is duplicate";
         }
 
@@ -4524,7 +4936,8 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    if (clcf->named && alias) {
+    //alias不能在 named location 内
+    if (clcf->named && alias) {     //  location @fallback {...}
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "the \"alias\" directive cannot be used "
                            "inside the named location");
@@ -4534,6 +4947,7 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    //不允许设置 $document_root 变量
     if (ngx_strstr(value[1].data, "$document_root")
         || ngx_strstr(value[1].data, "${document_root}"))
     {
@@ -4545,6 +4959,7 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //不允许设置 $realpath_root 变量
     if (ngx_strstr(value[1].data, "$realpath_root")
         || ngx_strstr(value[1].data, "${realpath_root}"))
     {
@@ -4556,21 +4971,26 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
+    //alias所在location 的 name长度， 如 /hello
     clcf->alias = alias ? clcf->name.len : 0;
     clcf->root = value[1];
 
+    //如果当前配置是root , 且配置值以 /结尾， 移除掉最后的/
     if (!alias && clcf->root.len > 0
         && clcf->root.data[clcf->root.len - 1] == '/')
     {
         clcf->root.len--;
     }
 
+    //配置值不是变量
     if (clcf->root.data[0] != '$') {
+        //解析root全路径
         if (ngx_conf_full_name(cf->cycle, &clcf->root, 0) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
     }
 
+    //复杂变量
     n = ngx_http_script_variables_count(&clcf->root);
 
     ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
@@ -4583,7 +5003,7 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 #endif
 
-    if (n) {
+    if (n) {        //如果包含变量
         sc.cf = cf;
         sc.source = &clcf->root;
         sc.lengths = &clcf->root_lengths;
@@ -4591,6 +5011,7 @@ ngx_http_core_root(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         sc.complete_lengths = 1;
         sc.complete_values = 1;
 
+        //编译复杂变量, 具体值需要在请求处理阶段获取
         if (ngx_http_script_compile(&sc) != NGX_OK) {
             return NGX_CONF_ERROR;
         }
@@ -5049,6 +5470,11 @@ ngx_http_core_error_log(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_core_module.html#keepalive_timeout
+ * 解析配置指令 keepalive_timeout
+ * 
+ */
 static char *
 ngx_http_core_keepalive(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

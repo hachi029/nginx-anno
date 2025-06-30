@@ -74,12 +74,35 @@
 #define NGX_MAX_CONF_ERRSTR  1024
 
 
+/**
+ * 代表一个配置指令
+ */
 struct ngx_command_s {
+    // 配置指令的名称 如 root、 alias
     ngx_str_t             name;
+    //type将指定配置项可以出现的位置和可以携带的参数个数
     ngx_uint_t            type;
+    /**
+     * 配置解析方法
+     * conf就是HTTP框架传给用户的在 ngx_http_mytest_create_loc_conf回调方法中分配的结构体ngx_http_mytest_conf_t
+     * cf->args是 1个ngx_array_t队列，它的成员都是 ngx_str_t结构。我们用 value指向 ngx_array_t的 elts内容，其中value[1]就是第 1个参数，同理， value[2]是第 2个参数
+     * 
+     *  cf ：指向ngx_conf_t  结构的指针，该结构包括从配置指令传递的参数；
+     *  cmd：指向当前ngx_command_t 结构；
+     *  conf：指向模块配置结构；
+     */
     char               *(*set)(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+    /**
+     * 用于指示配置项所处内存的相对偏移量，仅在type 中没有设置NGX_DIRECT_CONF 和NGX_MAIN_CONF 时才生效。对于HTTP 模块，conf 必须设置，它的取值如下：
+     *   NGX_HTTP_MAIN_CONF_OFFSET：使用create_main_conf 方法产生的结构体来存储解析出的配置项参数；
+     *   NGX_HTTP_SRV_CONF_OFFSET：使用 create_srv_conf 方法产生的结构体来存储解析出的配置项参数；
+     *   NGX_HTTP_LOC_CONF_OFFSET：使用 create_loc_conf 方法产生的结构体来存储解析出的配置项参数；
+     */
+     //在配置文件中的偏移量, NGX_HTTP_(MAIN|SRV|LOC)_CONF_OFFSET
     ngx_uint_t            conf;
+    // 表示当前配置项在整个存储配置项的结构体中的偏移位置。
     ngx_uint_t            offset;
+    // 配置项读取后的处理方法，必须是 ngx_conf_post_t结构的指针
     void                 *post;
 };
 
@@ -95,11 +118,14 @@ struct ngx_open_file_s {
 };
 
 
+/**
+ * conf_file 是存放 Nginx 配置文件的相关信息
+ */
 typedef struct {
-    ngx_file_t            file;
-    ngx_buf_t            *buffer;
+    ngx_file_t            file;         /* 文件的属性 */
+    ngx_buf_t            *buffer;       /* 文件的内容 */
     ngx_buf_t            *dump;
-    ngx_uint_t            line;
+    ngx_uint_t            line;          /* 文件的行数 */
 } ngx_conf_file_t;
 
 
@@ -113,22 +139,33 @@ typedef char *(*ngx_conf_handler_pt)(ngx_conf_t *cf,
     ngx_command_t *dummy, void *conf);
 
 
+ /**
+  * 代表一个配置项, 表示解析当前配置指令的运行环境数据（Context）
+  * 进入和退出一个配置块都会变更ngx_conf_s
+  */
 struct ngx_conf_s {
-    char                 *name;
-    ngx_array_t          *args;
+    char                 *name;     //当前解析到的指令
+    //保存解析到的指令字符串,0是指令名
+    ngx_array_t          *args;     //当前指令所包含的所有参数，数组value[1]就是第 1个参数，同理， value[2]是第 2个参数
 
-    ngx_cycle_t          *cycle;
+    // 当前配置的cycle结构体，用于添加监听端口
+    ngx_cycle_t          *cycle;            //待解析的全局变量ngx_cycle_t
     ngx_pool_t           *pool;
-    ngx_pool_t           *temp_pool;
-    ngx_conf_file_t      *conf_file;
+    ngx_pool_t           *temp_pool;        /* 临时内存池，分配一些临时数组或变量 */
+    ngx_conf_file_t      *conf_file;        /* 待解析的配置文件 */
     ngx_log_t            *log;
 
-    void                 *ctx;
-    ngx_uint_t            module_type;
-    ngx_uint_t            cmd_type;
+    // 重要参数，解析时的上下文
+    // 解析开始时是cycle->conf_ctx，即普通数组
+    // 在stream{}里是ngx_stream_conf_ctx_t
+    // 在events{}里是个存储void*的数组，即void**
+    // 在http{}里是ngx_http_conf_ctx_t, 指示http模块存储配置的三个数组
+    void                 *ctx;              // 描述指令的上下文
+    ngx_uint_t            module_type;      /* 当前解析的指令的模块类型 */
+    ngx_uint_t            cmd_type;         /* 当前解析的指令的指令类型 */
 
-    ngx_conf_handler_pt   handler;
-    void                 *handler_conf;
+    ngx_conf_handler_pt   handler;          /* 模块自定义的handler，即指令自定义的处理函数 */
+    void                 *handler_conf;     /* 自定义处理函数需要的相关配置 */
 };
 
 
@@ -154,6 +191,10 @@ typedef struct {
 } ngx_conf_num_bounds_t;
 
 
+/**
+ * 表示配置项枚举值，
+ * 参考 ngx_conf_set_enum_slot()
+ */
 typedef struct {
     ngx_str_t                 name;
     ngx_uint_t                value;
@@ -162,6 +203,9 @@ typedef struct {
 
 #define NGX_CONF_BITMASK_SET  1
 
+/**
+ * 类似ngx_conf_enum_t，但以bit位表示枚举值，效率更高
+ */
 typedef struct {
     ngx_str_t                 name;
     ngx_uint_t                mask;
@@ -277,6 +321,7 @@ void ngx_cdecl ngx_conf_log_error(ngx_uint_t level, ngx_conf_t *cf,
     ngx_err_t err, const char *fmt, ...);
 
 
+//conf就是各模块在各级别(main/srv/loc)的配置结构体
 char *ngx_conf_set_flag_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 char *ngx_conf_set_str_slot(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 char *ngx_conf_set_str_array_slot(ngx_conf_t *cf, ngx_command_t *cmd,

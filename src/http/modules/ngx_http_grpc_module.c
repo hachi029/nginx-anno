@@ -10,6 +10,25 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_grpc_module.html
+ * 
+ * 允许代理grpc服务，依赖 ngx_http_v2_module
+ * 
+ * 配置示例：
+ * server {
+    listen 9000;
+
+    http2 on;
+
+    location / {
+        grpc_pass 127.0.0.1:9000;
+    }
+  }
+ * 
+ * 
+ * 
+ */
 typedef struct {
     ngx_array_t               *flushes;
     ngx_array_t               *lengths;

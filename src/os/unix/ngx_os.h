@@ -23,15 +23,18 @@ typedef ssize_t (*ngx_send_pt)(ngx_connection_t *c, u_char *buf, size_t size);
 typedef ngx_chain_t *(*ngx_send_chain_pt)(ngx_connection_t *c, ngx_chain_t *in,
     off_t limit);
 
+/**
+ *  集合了7个TCP/UDP的数据收发函数
+ */
 typedef struct {
-    ngx_recv_pt        recv;
-    ngx_recv_chain_pt  recv_chain;
-    ngx_recv_pt        udp_recv;
-    ngx_send_pt        send;
-    ngx_send_pt        udp_send;
-    ngx_send_chain_pt  udp_send_chain;
-    ngx_send_chain_pt  send_chain;
-    ngx_uint_t         flags;
+    ngx_recv_pt        recv;            //tcp接收数据
+    ngx_recv_chain_pt  recv_chain;      //TCP接收多块数据
+    ngx_recv_pt        udp_recv;        //UDP接收数据
+    ngx_send_pt        send;            //TCP发送数据
+    ngx_send_pt        udp_send;        //UDP发送数据
+    ngx_send_chain_pt  udp_send_chain;  //UDP发送多块数据
+    ngx_send_chain_pt  send_chain;      //TCP发送多块数据
+    ngx_uint_t         flags;           //标志位，通常为0
 } ngx_os_io_t;
 
 
@@ -63,9 +66,9 @@ ngx_chain_t *ngx_udp_unix_sendmsg_chain(ngx_connection_t *c, ngx_chain_t *in,
 
 typedef struct {
     struct iovec  *iovs;
-    ngx_uint_t     count;
-    size_t         size;
-    ngx_uint_t     nalloc;
+    ngx_uint_t     count;       //实际使用的元素个数
+    size_t         size;        //所有元素的总大小
+    ngx_uint_t     nalloc;      //iovs数组的元素个数
 } ngx_iovec_t;
 
 ngx_chain_t *ngx_output_chain_to_iovec(ngx_iovec_t *vec, ngx_chain_t *in,

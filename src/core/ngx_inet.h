@@ -44,28 +44,37 @@ typedef union {
 } ngx_sockaddr_t;
 
 
+/**
+ * 一个ipv4的cidr
+ */
 typedef struct {
-    in_addr_t                 addr;
-    in_addr_t                 mask;
+    in_addr_t                 addr;     //无符号32位整数, 4 Bytes
+    in_addr_t                 mask;     //子网掩码
 } ngx_in_cidr_t;
 
 
 #if (NGX_HAVE_INET6)
 
+/**
+ * 一个ipv6的cidr
+ */
 typedef struct {
-    struct in6_addr           addr;
-    struct in6_addr           mask;
+    struct in6_addr           addr;     //无符号128位整数,  16 Bytes
+    struct in6_addr           mask;     //子网掩码
 } ngx_in6_cidr_t;
 
 #endif
 
 
+/**
+ * 代表一个CIDR配置
+ */
 typedef struct {
-    ngx_uint_t                family;
+    ngx_uint_t                family;   //AF_INET/AF_INET6/AF_UNIX
     union {
-        ngx_in_cidr_t         in;
+        ngx_in_cidr_t         in;       //ipv4 cidr
 #if (NGX_HAVE_INET6)
-        ngx_in6_cidr_t        in6;
+        ngx_in6_cidr_t        in6;      //ipv6 cidr
 #endif
     } u;
 } ngx_cidr_t;
@@ -78,14 +87,19 @@ typedef struct {
 } ngx_addr_t;
 
 
+/**
+ * 表示一个url
+ * 
+ * 
+ */
 typedef struct {
-    ngx_str_t                 url;
-    ngx_str_t                 host;
-    ngx_str_t                 port_text;
-    ngx_str_t                 uri;
+    ngx_str_t                 url;          //原始url
+    ngx_str_t                 host;         //host
+    ngx_str_t                 port_text;    //端口字符串
+    ngx_str_t                 uri;          // /及其之后的部分，包括args
 
-    in_port_t                 port;
-    in_port_t                 default_port;
+    in_port_t                 port;         //数字格式端口
+    in_port_t                 default_port; //当url中没有出现端口时的默认端口
     in_port_t                 last_port;
     int                       family;
 
@@ -93,14 +107,14 @@ typedef struct {
     unsigned                  uri_part:1;
     unsigned                  no_resolve:1;
 
-    unsigned                  no_port:1;
+    unsigned                  no_port:1;        //标识url中没有出现过端口
     unsigned                  wildcard:1;
 
     socklen_t                 socklen;
     ngx_sockaddr_t            sockaddr;
 
-    ngx_addr_t               *addrs;
-    ngx_uint_t                naddrs;
+    ngx_addr_t               *addrs;            //是一个数组，表示域名解析出来的多个地址
+    ngx_uint_t                naddrs;           //如果是一个域名，这个字段为域名解析出来的地址的个数
 
     char                     *err;
 } ngx_url_t;

@@ -9,7 +9,9 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-
+/**
+ * ngx_http_not_modified_filter， 没有配置指令，是一个header filter
+ */
 static ngx_uint_t ngx_http_test_if_unmodified(ngx_http_request_t *r);
 static ngx_uint_t ngx_http_test_if_modified(ngx_http_request_t *r);
 static ngx_uint_t ngx_http_test_if_match(ngx_http_request_t *r,
@@ -19,6 +21,7 @@ static ngx_int_t ngx_http_not_modified_filter_init(ngx_conf_t *cf);
 
 static ngx_http_module_t  ngx_http_not_modified_filter_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //安装了一个header filter
     ngx_http_not_modified_filter_init,     /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -35,7 +38,7 @@ static ngx_http_module_t  ngx_http_not_modified_filter_module_ctx = {
 ngx_module_t  ngx_http_not_modified_filter_module = {
     NGX_MODULE_V1,
     &ngx_http_not_modified_filter_module_ctx, /* module context */
-    NULL,                                  /* module directives */
+    NULL,                                  /* module directives */  // 这个模块没有配置指令
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
@@ -54,6 +57,7 @@ static ngx_http_output_header_filter_pt  ngx_http_next_header_filter;
 static ngx_int_t
 ngx_http_not_modified_header_filter(ngx_http_request_t *r)
 {
+    //如果响应状态码不是200，或者是子请求，或者禁用304，不处理
     if (r->headers_out.status != NGX_HTTP_OK
         || r != r->main
         || r->disable_not_modified)
@@ -61,6 +65,7 @@ ngx_http_not_modified_header_filter(ngx_http_request_t *r)
         return ngx_http_next_header_filter(r);
     }
 
+    //处理if_unmodified_since请求头（不常用）
     if (r->headers_in.if_unmodified_since
         && !ngx_http_test_if_unmodified(r))
     {
@@ -68,35 +73,42 @@ ngx_http_not_modified_header_filter(ngx_http_request_t *r)
                                                 NGX_HTTP_PRECONDITION_FAILED);
     }
 
+    //处理if_match请求头， if-match: etag, eta1
     if (r->headers_in.if_match
         && !ngx_http_test_if_match(r, r->headers_in.if_match, 0))
     {
+        //etag不匹配
         return ngx_http_filter_finalize_request(r, NULL,
                                                 NGX_HTTP_PRECONDITION_FAILED);
     }
 
+    //处理if_modified_since请求头和if_none_match请求头
     if (r->headers_in.if_modified_since || r->headers_in.if_none_match) {
 
         if (r->headers_in.if_modified_since
             && ngx_http_test_if_modified(r))
         {
+            //有修改
             return ngx_http_next_header_filter(r);
         }
 
+        //if_none_match, 请求头etag 和响应头etag不匹配，才会返回响应体
         if (r->headers_in.if_none_match
             && !ngx_http_test_if_match(r, r->headers_in.if_none_match, 1))
         {
+            //不匹配
             return ngx_http_next_header_filter(r);
         }
 
         /* not modified */
-
+        // 304响应, 不返回响应体
         r->headers_out.status = NGX_HTTP_NOT_MODIFIED;
         r->headers_out.status_line.len = 0;
         r->headers_out.content_type.len = 0;
         ngx_http_clear_content_length(r);
         ngx_http_clear_accept_ranges(r);
 
+        //移除content_encoding响应头
         if (r->headers_out.content_encoding) {
             r->headers_out.content_encoding->hash = 0;
             r->headers_out.content_encoding = NULL;
@@ -108,42 +120,58 @@ ngx_http_not_modified_header_filter(ngx_http_request_t *r)
     return ngx_http_next_header_filter(r);
 }
 
-
+/**
+ * 处理if_unmodified_since请求头
+ * 比较请求头中的if_unmodified_since和响应头中的last_modified_time
+ * 返回0将向客户端返回412 Precondition Failed。
+ * 返回1继续处理请求
+ */
 static ngx_uint_t
 ngx_http_test_if_unmodified(ngx_http_request_t *r)
 {
     time_t  iums;
 
+    //如果没有last_modified_time响应头，返回0
     if (r->headers_out.last_modified_time == (time_t) -1) {
         return 0;
     }
 
+    //将请求头中if_unmodified_since的值转换为时间戳
     iums = ngx_parse_http_time(r->headers_in.if_unmodified_since->value.data,
                                r->headers_in.if_unmodified_since->value.len);
 
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                  "http iums:%T lm:%T", iums, r->headers_out.last_modified_time);
 
+    //请求头中的时间戳大于等于响应头中的last_modified_time，返回1
     if (iums >= r->headers_out.last_modified_time) {
         return 1;
     }
-
+    //如果请求头中的时间戳小于响应头中的last_modified_time，返回0
     return 0;
 }
 
-
+/**
+ * 处理if_modified_since请求头
+ * 比较请求头中的if_modified_since和响应头中的last_modified_time
+ * 返回1表示有修改，返回0表示没有修改
+ */
 static ngx_uint_t
 ngx_http_test_if_modified(ngx_http_request_t *r)
 {
     time_t                     ims;
     ngx_http_core_loc_conf_t  *clcf;
 
+    //如果响应头没有last_modified_time响应头，直接返回
     if (r->headers_out.last_modified_time == (time_t) -1) {
         return 1;
     }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
+    //https://nginx.org/en/docs/http/ngx_http_core_module.html#if_modified_since
+    //if_modified_since off | exact | before
+    //if_modified_since配置为 off, 未启用
     if (clcf->if_modified_since == NGX_HTTP_IMS_OFF) {
         return 1;
     }
@@ -154,10 +182,12 @@ ngx_http_test_if_modified(ngx_http_request_t *r)
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http ims:%T lm:%T", ims, r->headers_out.last_modified_time);
 
+    //相等
     if (ims == r->headers_out.last_modified_time) {
         return 0;
     }
 
+    //如果配置为before，表示在响应头中的last_modified_time之前,则文件已修改
     if (clcf->if_modified_since == NGX_HTTP_IMS_EXACT
         || ims < r->headers_out.last_modified_time)
     {
@@ -167,7 +197,15 @@ ngx_http_test_if_modified(ngx_http_request_t *r)
     return 0;
 }
 
+/**
+ * https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Headers/If-Match
+ * If-Match: etag
+   If-Match: etag1, etag2, ...
 
+ * header 是请求头中的if_match, weak: 0
+   如果返回0， 将向客户端返回 412 Precondition Failed
+   如果返回1， etag匹配
+ */
 static ngx_uint_t
 ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
     ngx_uint_t weak)
@@ -177,10 +215,12 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
 
     list = &header->value;
 
+    //匹配所有的etag
     if (list->len == 1 && list->data[0] == '*') {
         return 1;
     }
 
+    //如果没有etag响应头，直接返回0
     if (r->headers_out.etag == NULL) {
         return 0;
     }
@@ -190,6 +230,7 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http im:\"%V\" etag:%V", list, &etag);
 
+    //如果weak为1，且etag的前两个字符是W/，则去掉前两个字符
     if (weak
         && etag.len > 2
         && etag.data[0] == 'W'
@@ -198,12 +239,14 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
         etag.len -= 2;
         etag.data += 2;
     }
-
+    //list为请求头中的if_match，格式为"etag1, etag2, ..."
     start = list->data;
     end = list->data + list->len;
 
+    //比较响应头中的etag是否和请求头中任意etag相等，如果相等，则认为匹配
     while (start < end) {
 
+        //如果weak为1，且etag的前两个字符是W/，则去掉前两个字符
         if (weak
             && end - start > 2
             && start[0] == 'W'
@@ -211,20 +254,22 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
         {
             start += 2;
         }
-
+        //如果响应头中的etag长度大于请求头中的etag长度，返回0
         if (etag.len > (size_t) (end - start)) {
             return 0;
         }
 
+        //前n个字符不相等
         if (ngx_strncmp(start, etag.data, etag.len) != 0) {
             goto skip;
         }
 
+        //前n个字符相等
         start += etag.len;
 
         while (start < end) {
             ch = *start;
-
+            //忽略两个etag之间的' '和\t
             if (ch == ' ' || ch == '\t') {
                 start++;
                 continue;
@@ -234,11 +279,13 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
         }
 
         if (start == end || *start == ',') {
+            //此处到达了请求头中的一个etag的结尾，相等
             return 1;
         }
 
     skip:
 
+        //直到找到下一个etag
         while (start < end && *start != ',') { start++; }
         while (start < end) {
             ch = *start;
@@ -250,8 +297,10 @@ ngx_http_test_if_match(ngx_http_request_t *r, ngx_table_elt_t *header,
 
             break;
         }
+        //开始比较下一个etag
     }
 
+    //没有找到匹配的etag，返回0
     return 0;
 }
 

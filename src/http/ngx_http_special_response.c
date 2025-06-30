@@ -412,6 +412,10 @@ static ngx_str_t ngx_http_error_pages[] = {
 };
 
 
+/**
+ * 负责根据rc参数构造完整的HTTP响应包
+ * 如http模块只是返回了状态码 404 .., 需要让HTTP框架独立构造响应包
+ */
 ngx_int_t
 ngx_http_special_response_handler(ngx_http_request_t *r, ngx_int_t error)
 {

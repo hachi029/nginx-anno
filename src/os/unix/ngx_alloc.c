@@ -9,18 +9,25 @@
 #include <ngx_core.h>
 
 
+// 基本的页大小,ngx_pagesize = getpagesize()
+// 通常是4k
 ngx_uint_t  ngx_pagesize;
+// 页大小的左移数
+// 左移数,4k即2^12,值12
 ngx_uint_t  ngx_pagesize_shift;
+// 宏定义为64
+// 然后由ngx_cpuinfo（ngx_cpuinfo.c）来探测
 ngx_uint_t  ngx_cacheline_size;
 
 
+// 封装C库函数malloc，增加了错误日志记录
 void *
 ngx_alloc(size_t size, ngx_log_t *log)
 {
     void  *p;
 
     p = malloc(size);
-    if (p == NULL) {
+    if (p == NULL) {        //如果分配失败，记录错误日志
         ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
                       "malloc(%uz) failed", size);
     }
@@ -31,6 +38,7 @@ ngx_alloc(size_t size, ngx_log_t *log)
 }
 
 
+// 分配内存并清零， 封装C库函数malloc，增加了错误日志记录
 void *
 ngx_calloc(size_t size, ngx_log_t *log)
 {
@@ -39,7 +47,8 @@ ngx_calloc(size_t size, ngx_log_t *log)
     p = ngx_alloc(size, log);
 
     if (p) {
-        ngx_memzero(p, size);
+        //调用ngx_memzero方法，将内存块设置为0
+        ngx_memzero(p, size);   //清零
     }
 
     return p;
@@ -48,6 +57,9 @@ ngx_calloc(size_t size, ngx_log_t *log)
 
 #if (NGX_HAVE_POSIX_MEMALIGN)
 
+// 对齐分配内存, malloc分配内存总是自动对齐到8/16字节，如果要以更大倍数对齐分配的内存
+//就需要使用函数posix_memalign
+//返回基于一个指定 alignment 的大小为 size 的内存空间，且其地址为 alignment 的整数倍，alignment 为2的幂
 void *
 ngx_memalign(size_t alignment, size_t size, ngx_log_t *log)
 {

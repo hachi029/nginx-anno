@@ -51,6 +51,9 @@ static ngx_core_module_t  ngx_errlog_module_ctx = {
 };
 
 
+/**
+ * 是ngx_modules数组中的第二个模块
+ */
 ngx_module_t  ngx_errlog_module = {
     NGX_MODULE_V1,
     &ngx_errlog_module_ctx,                /* module context */
@@ -74,14 +77,14 @@ ngx_uint_t              ngx_use_stderr = 1;
 
 static ngx_str_t err_levels[] = {
     ngx_null_string,
-    ngx_string("emerg"),
+    ngx_string("emerg"),      //1
     ngx_string("alert"),
     ngx_string("crit"),
     ngx_string("error"),
     ngx_string("warn"),
     ngx_string("notice"),
     ngx_string("info"),
-    ngx_string("debug")
+    ngx_string("debug")     //8
 };
 
 static const char *debug_levels[] = {
@@ -92,6 +95,7 @@ static const char *debug_levels[] = {
 
 #if (NGX_HAVE_VARIADIC_MACROS)
 
+//实现了错误日志记录的核心功能，ngx_log_error和ngx_log_debug宏只是对其进行了简单的封装
 void
 ngx_log_error_core(ngx_uint_t level, ngx_log_t *log, ngx_err_t err,
     const char *fmt, ...)

@@ -10,16 +10,28 @@
 #include <ngx_http.h>
 
 
+/**
+ * 
+ * http://nginx.org/en/docs/http/ngx_http_core_module.html#try_files
+ * 
+ *  逐次检查多个文件是否存在。如果都不存在，最后一个作为重定向uri或响应码
+ * 	try_files file ... uri;
+ *  try_files file ... =code;
+ * 
+ */
 typedef struct {
-    ngx_array_t           *lengths;
-    ngx_array_t           *values;
-    ngx_str_t              name;
+    ngx_array_t           *lengths;          //ngx_http_script_compile相关
+    ngx_array_t           *values;          //ngx_http_script_compile相关
+    ngx_str_t              name;            //文件名
 
-    unsigned               code:10;
-    unsigned               test_dir:1;
+    unsigned               code:10;         //返回状态码
+    unsigned               test_dir:1;      //标识是一个目录
 } ngx_http_try_file_t;
 
 
+/**
+ * 模块loc配置结构体
+ */
 typedef struct {
     ngx_http_try_file_t   *try_files;
 } ngx_http_try_files_loc_conf_t;
@@ -46,6 +58,7 @@ static ngx_command_t  ngx_http_try_files_commands[] = {
 
 static ngx_http_module_t  ngx_http_try_files_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //注册一个content_handler ngx_http_try_files_handler
     ngx_http_try_files_init,               /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -75,6 +88,9 @@ ngx_module_t  ngx_http_try_files_module = {
 };
 
 
+/**
+ * content_handler
+ */
 static ngx_int_t
 ngx_http_try_files_handler(ngx_http_request_t *r)
 {
@@ -90,6 +106,7 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
     ngx_http_script_len_code_pt     lcode;
     ngx_http_try_files_loc_conf_t  *tlcf;
 
+    //获取配置结构体
     tlcf = ngx_http_get_module_loc_conf(r, ngx_http_try_files_module);
 
     if (tlcf->try_files == NULL) {
@@ -107,10 +124,12 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
 
     tf = tlcf->try_files;
 
+    //http_core模块配置
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
     alias = clcf->alias;
 
+    //循环tlcf->try_files每个配置，尝试打开文件
     for ( ;; ) {
 
         if (tf->lengths) {
@@ -183,6 +202,7 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
             }
         }
 
+        //如果是文件夹
         test_dir = tf->test_dir;
 
         tf++;
@@ -191,8 +211,10 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
                        "trying to use %s: \"%s\" \"%s\"",
                        test_dir ? "dir" : "file", name, path.data);
 
+        //最后一个参数
         if (tf->lengths == NULL && tf->name.len == 0) {
 
+            //返回状态码
             if (tf->code) {
                 return tf->code;
             }
@@ -200,12 +222,14 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
             path.len -= root;
             path.data += root;
 
+            //执行named_location
             if (path.data[0] == '@') {
                 (void) ngx_http_named_location(r, &path);
 
             } else {
+                //重定向
                 ngx_http_split_args(r, &path, &args);
-
+                
                 (void) ngx_http_internal_redirect(r, &path, &args);
             }
 
@@ -227,6 +251,7 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
+        //尝试打开文件
         if (ngx_open_cached_file(clcf->open_file_cache, &path, &of, r->pool)
             != NGX_OK)
         {
@@ -287,6 +312,9 @@ ngx_http_try_files_handler(ngx_http_request_t *r)
 }
 
 
+/**
+ * try_files 配置指令
+ */
 static char *
 ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -298,10 +326,11 @@ ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ngx_http_try_file_t        *tf;
     ngx_http_script_compile_t   sc;
 
-    if (tlcf->try_files) {
+    if (tlcf->try_files) {      //重复配置
         return "is duplicate";
     }
 
+    //创建ngx_http_try_file_t数组
     tf = ngx_pcalloc(cf->pool, cf->args->nelts * sizeof(ngx_http_try_file_t));
     if (tf == NULL) {
         return NGX_CONF_ERROR;
@@ -311,22 +340,24 @@ ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
 
+    //遍历配置指令的每个参数
     for (i = 0; i < cf->args->nelts - 1; i++) {
 
         tf[i].name = value[i + 1];
 
         if (tf[i].name.len > 0
-            && tf[i].name.data[tf[i].name.len - 1] == '/'
-            && i + 2 < cf->args->nelts)
+            && tf[i].name.data[tf[i].name.len - 1] == '/'       //以'/'结尾为目录
+            && i + 2 < cf->args->nelts)                         //不是最后一个参数
         {
-            tf[i].test_dir = 1;
-            tf[i].name.len--;
+            tf[i].test_dir = 1;     //目录标识
+            tf[i].name.len--;       //去掉最后的/
             tf[i].name.data[tf[i].name.len] = '\0';
         }
 
         n = ngx_http_script_variables_count(&tf[i].name);
 
         if (n) {
+            //含有变量
             ngx_memzero(&sc, sizeof(ngx_http_script_compile_t));
 
             sc.cf = cf;
@@ -337,6 +368,7 @@ ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
             sc.complete_lengths = 1;
             sc.complete_values = 1;
 
+            //编译脚本
             if (ngx_http_script_compile(&sc) != NGX_OK) {
                 return NGX_CONF_ERROR;
             }
@@ -347,6 +379,7 @@ ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //表示是最后一个元素，且为返回一个状态码
     if (tf[i - 1].name.data[0] == '=') {
 
         code = ngx_atoi(tf[i - 1].name.data + 1, tf[i - 1].name.len - 2);
@@ -365,6 +398,9 @@ ngx_http_try_files(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 }
 
 
+/**
+ * 创建配置结构体
+ */
 static void *
 ngx_http_try_files_create_loc_conf(ngx_conf_t *cf)
 {
@@ -385,6 +421,10 @@ ngx_http_try_files_create_loc_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * postconfiguration
+ * 注册content_handler
+ */
 static ngx_int_t
 ngx_http_try_files_init(ngx_conf_t *cf)
 {

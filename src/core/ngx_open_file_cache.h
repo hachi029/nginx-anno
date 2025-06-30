@@ -88,14 +88,19 @@ struct ngx_cached_open_file_s {
 };
 
 
+/**
+ * 代表一个文件打开缓存区
+ * 
+ * Defines a cache that stores the file descriptors of frequently used logs whose names contain variables
+ */
 typedef struct {
     ngx_rbtree_t             rbtree;
     ngx_rbtree_node_t        sentinel;
     ngx_queue_t              expire_queue;
 
     ngx_uint_t               current;
-    ngx_uint_t               max;
-    time_t                   inactive;
+    ngx_uint_t               max;       //缓冲区中最大文件描述符数量
+    time_t                   inactive;  //默认10秒，超过该时间内文件没有被访问，将被关闭
 } ngx_open_file_cache_t;
 
 

@@ -15,8 +15,16 @@
 #define NGX_HTTP_GZIP_STATIC_ALWAYS  2
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_gzip_static_module.html
+ * 
+ * 允许发送已经预先压缩过的文件
+ * 
+ * 是一个content_handler
+ * 
+ */
 typedef struct {
-    ngx_uint_t  enable;
+    ngx_uint_t  enable;     //off on always
 } ngx_http_gzip_static_conf_t;
 
 
@@ -50,6 +58,7 @@ static ngx_command_t  ngx_http_gzip_static_commands[] = {
 
 static ngx_http_module_t  ngx_http_gzip_static_module_ctx = {
     NULL,                                  /* preconfiguration */
+    //注册一个content_handler
     ngx_http_gzip_static_init,             /* postconfiguration */
 
     NULL,                                  /* create main configuration */
@@ -79,6 +88,9 @@ ngx_module_t  ngx_http_gzip_static_module = {
 };
 
 
+/**
+ * content_handler
+ */
 static ngx_int_t
 ngx_http_gzip_static_handler(ngx_http_request_t *r)
 {
@@ -105,14 +117,14 @@ ngx_http_gzip_static_handler(ngx_http_request_t *r)
 
     gzcf = ngx_http_get_module_loc_conf(r, ngx_http_gzip_static_module);
 
-    if (gzcf->enable == NGX_HTTP_GZIP_STATIC_OFF) {
+    if (gzcf->enable == NGX_HTTP_GZIP_STATIC_OFF) {     //配置项为OFF
         return NGX_DECLINED;
     }
 
-    if (gzcf->enable == NGX_HTTP_GZIP_STATIC_ON) {
+    if (gzcf->enable == NGX_HTTP_GZIP_STATIC_ON) {      //配置项为ON
         rc = ngx_http_gzip_ok(r);
 
-    } else {
+    } else {                                            //配置项为ALWAYS， 总是 发送压缩过的文件，无论客户端是否支持
         /* always */
         rc = NGX_OK;
     }
@@ -125,6 +137,7 @@ ngx_http_gzip_static_handler(ngx_http_request_t *r)
 
     log = r->connection->log;
 
+    //映射url为本地文件
     p = ngx_http_map_uri_to_path(r, &path, &root, sizeof(".gz") - 1);
     if (p == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -156,6 +169,7 @@ ngx_http_gzip_static_handler(ngx_http_request_t *r)
     if (ngx_open_cached_file(clcf->open_file_cache, &path, &of, r->pool)
         != NGX_OK)
     {
+        //错误处理
         switch (of.err) {
 
         case 0:
@@ -270,7 +284,7 @@ ngx_http_gzip_static_handler(ngx_http_request_t *r)
     b->file_pos = 0;
     b->file_last = of.size;
 
-    b->in_file = b->file_last ? 1 : 0;
+    b->in_file = b->file_last ? 1 : 0;      //是否为空文件
     b->last_buf = (r == r->main) ? 1 : 0;
     b->last_in_chain = 1;
     b->sync = (b->last_buf || b->in_file) ? 0 : 1;
@@ -287,6 +301,7 @@ ngx_http_gzip_static_handler(ngx_http_request_t *r)
 }
 
 
+//创建配置结构体
 static void *
 ngx_http_gzip_static_create_conf(ngx_conf_t *cf)
 {
@@ -303,6 +318,7 @@ ngx_http_gzip_static_create_conf(ngx_conf_t *cf)
 }
 
 
+//合并配置结构体
 static char *
 ngx_http_gzip_static_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -316,6 +332,9 @@ ngx_http_gzip_static_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 注册一个content_handler
+ */
 static ngx_int_t
 ngx_http_gzip_static_init(ngx_conf_t *cf)
 {

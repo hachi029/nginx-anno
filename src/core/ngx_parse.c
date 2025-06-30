@@ -9,6 +9,9 @@
 #include <ngx_core.h>
 
 
+/**
+ * 解析size 参数， 单位支持 k/m
+ */
 ssize_t
 ngx_parse_size(ngx_str_t *line)
 {

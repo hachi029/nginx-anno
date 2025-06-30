@@ -10,6 +10,22 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_geo_module.html
+ * 
+ * 根据客户端ip创建变量，配置格式如下：
+ * geo $geo {
+            default        0;
+
+            127.0.0.1      2;
+            192.168.1.0/24 1;
+            10.1.0.0/16    1;
+
+            ::1            2;
+            2001:0db8::/32 1;
+        }
+ * 
+ */
 typedef struct {
     ngx_http_variable_value_t       *value;
     u_short                          start;
@@ -112,7 +128,7 @@ static u_char *ngx_http_geo_copy_values(u_char *base, u_char *p,
 
 static ngx_command_t  ngx_http_geo_commands[] = {
 
-    { ngx_string("geo"),
+    { ngx_string("geo"),        //配置指令，是一个block, 支持一个或两个参数，在main上下文
       NGX_HTTP_MAIN_CONF|NGX_CONF_BLOCK|NGX_CONF_TAKE12,
       ngx_http_geo_block,
       NGX_HTTP_MAIN_CONF_OFFSET,
@@ -381,6 +397,14 @@ ngx_http_geo_real_addr(ngx_http_request_t *r, ngx_http_geo_ctx_t *ctx,
 }
 
 
+/**
+ * geo配置指令解析
+ * 
+ * 	geo [$address] $variable { ... }
+ *  默认是使用$remote_addr作为变量，也支持其他变量如$arg_remote_addr
+ *  $variable 是变量的名称，变量值根据$address和{}配置的规则映射出来
+ * 
+ */
 static char *
 ngx_http_geo_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {

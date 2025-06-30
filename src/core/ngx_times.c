@@ -24,13 +24,28 @@ static ngx_msec_t ngx_monotonic_time(time_t sec, ngx_uint_t msec);
 #define NGX_TIME_SLOTS   64
 
 static ngx_uint_t        slot;
+// 更新时间使用的锁，给多线程用
 static ngx_atomic_t      ngx_time_lock;
 
+/**
+ * 以下全局变量，缓存当前时间
+ * 对于worker进程而言，除了Nginx启动时更新一次时间外，任何更新时间的操作都只能由ngx_epoll_process_events方法执行
+ * 
+ * ngx_epoll_process_events当flags参数中有NGX_UPDATE_TIME标志位， 
+ * 或者ngx_event_timer_alarm标志位为1时，就会调用ngx_time_update方法更新缓存时间
+ * 
+ */
+// 格林威治时间 1970年 1月1日凌晨 0点0分0秒到当前时间的毫秒数
 volatile ngx_msec_t      ngx_current_msec;
+// ngx_time_t结构体形式的当前时间
 volatile ngx_time_t     *ngx_cached_time;
+//用于记录error_log的当前时间字符串，它的格式类似于： "1970/09/28 12:00:00"*/
 volatile ngx_str_t       ngx_cached_err_log_time;
+//用于 HTTP相关的当前时间字符串，它的格式类似于： "Mon, 28 Sep 1970 06:00:00 GMT"
 volatile ngx_str_t       ngx_cached_http_time;
+//用于记录 HTTP日志的当前时间字符串，它的格式类似于： "28/Sep/1970:12:00:00 +0600"*/
 volatile ngx_str_t       ngx_cached_http_log_time;
+ // 以 ISO 8601标准格式记录下的字符串形式的当前时间
 volatile ngx_str_t       ngx_cached_http_log_iso8601;
 volatile ngx_str_t       ngx_cached_syslog_time;
 
@@ -62,6 +77,8 @@ static char  *week[] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
 static char  *months[] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
 
+// main函数调用，初始化时间
+// cache时间指向时间槽的0位置                          
 void
 ngx_time_init(void)
 {
@@ -71,12 +88,15 @@ ngx_time_init(void)
     ngx_cached_http_log_iso8601.len = sizeof("1970-09-28T12:00:00+06:00") - 1;
     ngx_cached_syslog_time.len = sizeof("Sep 28 12:00:00") - 1;
 
+    // cache时间指向时间槽的0位置
     ngx_cached_time = &cached_time[0];
 
     ngx_time_update();
 }
 
-
+/**
+ * 更新缓存时间
+ */
 void
 ngx_time_update(void)
 {
@@ -87,36 +107,48 @@ ngx_time_update(void)
     ngx_time_t      *tp;
     struct timeval   tv;
 
+    // 首先获取锁，避免并发错误
     if (!ngx_trylock(&ngx_time_lock)) {
         return;
     }
 
+    // 系统调用，获取微秒精度的时间
     ngx_gettimeofday(&tv);
 
+    // 转换为秒和毫秒
     sec = tv.tv_sec;
     msec = tv.tv_usec / 1000;
 
+    // 得到毫秒时间戳
+    // ngx_current_msec = (ngx_msec_t) sec * 1000 + msec;
+    // 1.13.10改为使用单调时间，不再是日历时间
     ngx_current_msec = ngx_monotonic_time(sec, msec);
 
+    // 当前使用的时间槽
     tp = &cached_time[slot];
 
+    // 如果秒没变那么仍然使用这个槽
+    // 只更新毫秒
     if (tp->sec == sec) {
         tp->msec = msec;
         ngx_unlock(&ngx_time_lock);
         return;
     }
 
+    // 前进slot，超过则归0
     if (slot == NGX_TIME_SLOTS - 1) {
         slot = 0;
     } else {
         slot++;
     }
 
+    // 更新时间槽里的时间
     tp = &cached_time[slot];
 
     tp->sec = sec;
     tp->msec = msec;
 
+    // 各种格式的时间字符串
     ngx_gmtime(sec, &gmt);
 
 
@@ -179,8 +211,10 @@ ngx_time_update(void)
                        months[tm.ngx_tm_mon - 1], tm.ngx_tm_mday,
                        tm.ngx_tm_hour, tm.ngx_tm_min, tm.ngx_tm_sec);
 
+    // 原子操作相关，禁止语句顺序优化
     ngx_memory_barrier();
 
+    // 时间更新完毕，更新cache指针
     ngx_cached_time = tp;
     ngx_cached_http_time.data = p0;
     ngx_cached_err_log_time.data = p1;
@@ -192,9 +226,12 @@ ngx_time_update(void)
 }
 
 
+// 1.13.10改为使用单调时间
+// 计时起点是机器的启动时间
 static ngx_msec_t
 ngx_monotonic_time(time_t sec, ngx_uint_t msec)
 {
+     // 如果支持单调时间，就调用系统函数，不使用传入的参数
 #if (NGX_HAVE_CLOCK_MONOTONIC)
     struct timespec  ts;
 
@@ -209,6 +246,7 @@ ngx_monotonic_time(time_t sec, ngx_uint_t msec)
 
 #endif
 
+    // 条件编译发现不支持单调时间，就是简单的秒*1000+毫秒
     return (ngx_msec_t) sec * 1000 + msec;
 }
 

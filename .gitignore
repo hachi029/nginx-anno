@@ -1,3 +1,7 @@
 /Makefile
 /objs/
 /tmp/
+/.idea/
+/.vscode/
+*.iml
+/tmp/

@@ -17,6 +17,9 @@ static ngx_int_t ngx_event_connect_set_transparent(ngx_peer_connection_t *pc,
 #endif
 
 
+/**
+ * 向pc指向的上游服务器发起连接
+ */
 ngx_int_t
 ngx_event_connect_peer(ngx_peer_connection_t *pc)
 {
@@ -31,6 +34,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     ngx_event_t       *rev, *wev;
     ngx_connection_t  *c;
 
+    //从ip地址列表中选择一个上游服务器
     rc = pc->get(pc, pc->data);
     if (rc != NGX_OK) {
         return rc;
@@ -38,6 +42,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     type = (pc->type ? pc->type : SOCK_STREAM);
 
+    //创建socket
     s = ngx_socket(pc->sockaddr->sa_family, type, 0);
 
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, pc->log, 0, "%s socket %d",
@@ -50,6 +55,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     }
 
 
+    //获取一个连接
     c = ngx_get_connection(s, pc->log);
 
     if (c == NULL) {
@@ -63,7 +69,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     c->type = type;
 
-    if (pc->rcvbuf) {
+    if (pc->rcvbuf) {       //设置接收缓冲区大小
         if (setsockopt(s, SOL_SOCKET, SO_RCVBUF,
                        (const void *) &pc->rcvbuf, sizeof(int)) == -1)
         {
@@ -73,6 +79,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
     }
 
+    //设置keepalive
     if (pc->so_keepalive) {
         value = 1;
 
@@ -85,6 +92,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         }
     }
 
+    //设置为非阻塞
     if (ngx_nonblocking(s) == -1) {
         ngx_log_error(NGX_LOG_ALERT, pc->log, ngx_socket_errno,
                       ngx_nonblocking_n " failed");
@@ -185,6 +193,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     c->log_error = pc->log_error;
 
+    //连接关联的读写事件
     rev = c->read;
     wev = c->write;
 
@@ -197,6 +206,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 
     c->start_time = ngx_current_msec;
 
+    //将socket加入epoll中  ngx_epoll_add_connection
     if (ngx_add_conn) {
         if (ngx_add_conn(c) == NGX_ERROR) {
             goto failed;
@@ -206,6 +216,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
     ngx_log_debug3(NGX_LOG_DEBUG_EVENT, pc->log, 0,
                    "connect to %V, fd:%d #%uA", pc->name, s, c->number);
 
+    //发起连接
     rc = connect(s, pc->sockaddr, pc->socklen);
 
     if (rc == -1) {
@@ -219,18 +230,18 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
 #endif
             )
         {
-            if (err == NGX_ECONNREFUSED
+            if (err == NGX_ECONNREFUSED     //连接拒绝
 #if (NGX_LINUX)
                 /*
                  * Linux returns EAGAIN instead of ECONNREFUSED
                  * for unix sockets if listen queue is full
                  */
-                || err == NGX_EAGAIN
+                || err == NGX_EAGAIN       //对端监听队列满
 #endif
-                || err == NGX_ECONNRESET
-                || err == NGX_ENETDOWN
-                || err == NGX_ENETUNREACH
-                || err == NGX_EHOSTDOWN
+                || err == NGX_ECONNRESET   //连接重置
+                || err == NGX_ENETDOWN     //
+                || err == NGX_ENETUNREACH  
+                || err == NGX_EHOSTDOWN     //主机不可达
                 || err == NGX_EHOSTUNREACH)
             {
                 level = NGX_LOG_ERR;
@@ -242,7 +253,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
             ngx_log_error(level, c->log, err, "connect() to %V failed",
                           pc->name);
 
-            ngx_close_connection(c);
+            ngx_close_connection(c);    //关闭连接
             pc->connection = NULL;
 
             return NGX_DECLINED;
@@ -301,6 +312,7 @@ ngx_event_connect_peer(ngx_peer_connection_t *pc)
         event = NGX_LEVEL_EVENT;
     }
 
+    //设置读事件
     if (ngx_add_event(rev, NGX_READ_EVENT, event) != NGX_OK) {
         goto failed;
     }

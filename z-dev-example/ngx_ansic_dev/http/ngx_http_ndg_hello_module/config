@@ -1,0 +1,26 @@
+# module config
+
+#模块名称，仅用展示用，与编译无关
+ngx_addon_name=ngx_http_ndg_hello_module
+ngx_module_type=HTTP
+#模块在C代码里的名字，用于编译链接
+ngx_module_name=ngx_http_ndg_hello_module
+#模块的源码文件，可以有多个，用空格分割
+ngx_module_srcs="$ngx_addon_dir/ngx_http_ndg_hello_module.c"
+
+. auto/module
+
+#$ngx_module_link 变量可以检测编译脚本的版本是新格式还是老格式
+#老格式没有这个变量
+#if test -n "$ngx_module_link"; then
+#    ngx_module_type=HTTP
+#    ngx_module_name=ngx_http_ndg_hello_module
+#    ngx_module_srcs="$ngx_addon_dir/ngx_http_ndg_hello_module.c"
+#
+#    . auto/module
+#else
+#老格式
+#    HTTP_MODULES="$HTTP_MODULES ngx_http_ndg_hello_module"
+#    NGX_ADDON_SRCS="$NGX_ADDON_SRCS $ngx_addon_dir/ngx_http_ndg_hello_module.c"
+#fi
+

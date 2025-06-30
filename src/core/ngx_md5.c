@@ -15,6 +15,9 @@ static const u_char *ngx_md5_body(ngx_md5_t *ctx, const u_char *data,
     size_t size);
 
 
+/**
+ * 初始化md5上下文
+ */ 
 void
 ngx_md5_init(ngx_md5_t *ctx)
 {
@@ -27,6 +30,11 @@ ngx_md5_init(ngx_md5_t *ctx)
 }
 
 
+/**
+ * 计算一段数据的md5, 可以多次调用
+ * data: 为要计算md5值的数据
+ * 
+ */ 
 void
 ngx_md5_update(ngx_md5_t *ctx, const void *data, size_t size)
 {
@@ -58,6 +66,11 @@ ngx_md5_update(ngx_md5_t *ctx, const void *data, size_t size)
 }
 
 
+/**
+ * 计算md5值
+ * result 为md5结果
+ * ctx md5计算上下文
+ */
 void
 ngx_md5_final(u_char result[16], ngx_md5_t *ctx)
 {

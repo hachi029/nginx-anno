@@ -1,0 +1,62 @@
+sudo: required
+dist: trusty
+
+os: linux
+
+notifications:
+  email: false
+
+language: c
+
+compiler:
+  - gcc
+  - clang
+
+cache:
+  cpan: true
+  apt: true
+  ccache: true
+
+env:
+  global:
+    - LUAJIT_LIB=/usr/lib64/libluajit-5.1.so
+    - LUAJIT_INC=/usr/include/luajit-2.0
+  matrix:
+    - NGINX_VERSION=1.14.0
+    - NGINX_VERSION=1.15.6
+
+before_install:
+  - sudo apt-get install -qq -y cpanminus libluajit-5.1-dev libgd-dev
+  - sudo cpanm -v --notest Test::Nginx > build.log 2>&1 || (cat build.log && exit 1)
+
+install:
+  - wget http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz && tar -xzf nginx-${NGINX_VERSION}.tar.gz
+
+script:
+  - cd nginx-${NGINX_VERSION}/
+  -  ./configure
+   --add-module=../http/ngx_http_ndg_hello_module
+   --add-module=../http/ngx_http_ndg_basic_module
+   --add-module=../http/ngx_http_ndg_advance_module
+   --add-module=../http/ngx_http_ndg_echo_module
+   --add-module=../http/ngx_http_ndg_filter_module
+   --add-module=../http/ngx_http_ndg_upstream_module
+   --add-module=../http/ngx_http_ndg_balance_module
+   --add-module=../http/ngx_http_ndg_subrequest_module
+   --add-module=../http/ngx_http_ndg_variable_module
+   --add-module=../http/ngx_http_ndg_complex_value_module
+   --add-module=../http/ngx_http_ndg_debug_module
+   --with-threads
+   --add-module=../http/ngx_http_ndg_thread_module
+   --with-stream
+   --add-module=../stream/ngx_stream_ndg_hello_module
+   --add-module=../stream/ngx_stream_ndg_discard_module
+   --add-module=../stream/ngx_stream_ndg_time_module
+   --add-module=../stream/ngx_stream_ndg_echo_module
+   --add-module=../misc
+   > build.log 2>&1 || (cat build.log && exit 1)
+  - make -j2 > build.log 2>&1 || (cat build.log && exit 1)
+  - ./objs/nginx -V
+  - export PATH=$PATH:`pwd`/objs
+  - cd ..
+  - prove -r t

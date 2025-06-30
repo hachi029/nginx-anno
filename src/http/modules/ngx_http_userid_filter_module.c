@@ -27,6 +27,13 @@
 #define NGX_HTTP_USERID_MAX_EXPIRES  2145916555
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_userid_module.html
+ * 
+ * 浏览器第一次请求nginx的时候，nginx在响应时在http的响应头中插入一段唯一性的用来标识用户的user id的cookie代码，
+ * 等到下一次浏览器继续请求nginx的时候，nginx将获得之前植入在cookie中的user id，从而可以在后续根据这个标识的user id，
+ * 通过日志分析来分析用户的行为等等
+ */
 typedef struct {
     ngx_uint_t  enable;
     ngx_uint_t  flags;
@@ -119,13 +126,25 @@ static ngx_conf_post_handler_pt  ngx_http_userid_p3p_p = ngx_http_userid_p3p;
 
 static ngx_command_t  ngx_http_userid_commands[] = {
 
-    { ngx_string("userid"),
+    /**
+     * on: 开启设置v2版本的cookie， 对于接收到的对应cookie会进行日志记录。
+     * v1: 开启设置v1版本的cookie，对于接收到的对应cookie会进行日志记录。
+     * log: 关闭设置cookie功能，但是对于接收到的对应cookie会进行日志记录。
+     * off: 关闭userid模块功能。
+     */
+    { ngx_string("userid"),     //开启userid 模块
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_enum_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_userid_conf_t, enable),
       ngx_http_userid_state },
 
+    /**
+     * 	userid_service number;
+     * 定义每台nginx server自己的标识来确保在多台nginx的集群环境中生成的客户端userid的唯一性
+     * 如果user id是由多台nginx服务器生成的，那么每台nginx server最好都设置自己的标识来确保生成的客户端user id是唯一的。
+      对于v1版本的cookie，默认值是0；而对于v2版本的cookie，默认值是服务器IP地址的最后四个8位字节的数字
+     */ 
     { ngx_string("userid_service"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
@@ -133,34 +152,56 @@ static ngx_command_t  ngx_http_userid_commands[] = {
       offsetof(ngx_http_userid_conf_t, service),
       NULL },
 
-    { ngx_string("userid_name"),
+    /**
+     * 设置nginx响应的时候cookie的名字，或者nginx接收到用户请求的时候通过这个设置的cookie的名字来获取用户的ID
+     */
+    { ngx_string("userid_name"),    //  设置将在用户浏览器中植入的cookie的字段名
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_userid_conf_t, name),
       NULL },
 
-    { ngx_string("userid_domain"),
+    { ngx_string("userid_domain"),  // 设置在哪个域名下进行设置cookie
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_userid_conf_t, domain),
       &ngx_http_userid_domain_p },
 
-    { ngx_string("userid_path"),
+    { ngx_string("userid_path"),    //设置在哪个路径下设置cookie。
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_userid_conf_t, path),
       &ngx_http_userid_path_p },
 
-    { ngx_string("userid_expires"),
+    /**
+     * time: 超时的时长，单位可以是s,m,d,w,M,y
+     *  max: 设置超时时间为“31 Dec 2037 23:55:55 GMT”.
+     *  off: 设置cookie在浏览器关闭之后立即实效。
+     */
+    { ngx_string("userid_expires"), //cookie的生效时间。
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_http_userid_expires,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
       NULL },
 
+    /**
+     * 为cookie设置附加的标记。
+     * 
+     * off: 不添加附加标记。
+     * secure: 设置本属性可以加强cookie的安全性，浏览器只有在https请求中才会发送该cookie。
+     * httponly: 设置本属性避免浏览器的javascript访问这个cookie值。
+     * samesite=strict: 浏览器只有在对cookie的源站点进行请求的时候才会发送该cookie。
+     * samesite=lax: “Lax"和"strict” 是类似的，但是浏览器在用户访问 cookie 的源站点时（即使用户从不同的站点进入），
+     *               也会发送该 cookie。例如，通过从外部站点跟随链接。
+     * samesite=none: “none” 指定了在源站点和跨站请求中都发送 cookie，但仅在安全上下文中（即，如果 samesite=none，
+     *                则还必须设置 secure 属性）。
+     * 
+     * 如果没有设置 SameSite 属性，则 cookie 被视为 Lax。
+     */
     { ngx_string("userid_flags"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE123,
       ngx_conf_set_bitmask_slot,
@@ -168,6 +209,15 @@ static ngx_command_t  ngx_http_userid_commands[] = {
       offsetof(ngx_http_userid_conf_t, flags),
       &ngx_http_userid_flags },
 
+    /**
+     * p3p: Platform for Privacy Preferences
+     * 通过设置正确的 userid_p3p 参数， 可以提供网站的隐私政策通知，增加用户对于隐私保护的信任，并确保网站在不同环境中的兼容性
+     * 
+     * userid_p3p 参数允许您指定一个 P3P 策略标记，该标记将与生成的 Cookie 一起发送给客户端。这样，客户端在接收 Cookie 时可以查看该策略标记，并了解有关网站的隐私偏好和数据处理的信息。
+     * P3P 是一种隐私策略框架，旨在帮助网站向用户传达其隐私政策和数据收集行为。它使用特定的标记语言，允许网站提供有关其隐私偏好的信息，并让用户能够了解和控制其个人数据的使用方式。
+     * P3P 策略标记使用特定的语法和字段，描述网站的隐私偏好和数据收集实践。例如，它可以包含有关数据收集目的、数据使用方式、数据披露和共享等方面的信息。
+     * 
+     * */  
     { ngx_string("userid_p3p"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_str_slot,
@@ -175,6 +225,14 @@ static ngx_command_t  ngx_http_userid_commands[] = {
       offsetof(ngx_http_userid_conf_t, p3p),
       &ngx_http_userid_p3p_p },
 
+    /**
+     * 如果参数不是off，则启用cookie标记机制并设置用作标记的字符。
+     * 此机制用于在保留客户端标识符的同时添加或更改userid_p3p和/或cookie过期时间。
+     * 标记可以是英文字母（区分大小写），数字或“ =”字符的任何字母。
+     * 
+     * 如果标记已设置，则将其与在cookie中传递的客户机标识的base64表示形式中的第一个填充符号进行比较。
+     * 如果它们不匹配，则Cookie会重新发送指定的标记，到期时间和“P3P”标题。
+     */
     { ngx_string("userid_mark"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_http_userid_mark,
@@ -673,6 +731,9 @@ ngx_http_userid_reset_variable(ngx_http_request_t *r,
 }
 
 
+/**
+ * 注册变量
+ */
 static ngx_int_t
 ngx_http_userid_add_variables(ngx_conf_t *cf)
 {

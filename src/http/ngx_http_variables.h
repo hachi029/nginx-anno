@@ -14,32 +14,74 @@
 #include <ngx_http.h>
 
 
-typedef ngx_variable_value_t  ngx_http_variable_value_t;
+/**
+ * 变量可以看作是模块导出的一段数据，可用于模块间通信
+ * 1.两类变量：
+ *  简单变量：即$xxx格式
+ *  复杂变量：含有多个简单变量的字符串，又称为脚本
+ * 
+ * 2. 两个结构体实现简单变量：
+ *  ngx_http_variable_t : 表示变量名
+ *  ngx_variable_value_t : 表示变量值
+ */
+typedef ngx_variable_value_t  ngx_http_variable_value_t;         //类似ngx_str_t, 只是多了一些标识
 
 #define ngx_http_variable(v)     { sizeof(v) - 1, 1, 0, 0, 0, (u_char *) v }
 
 typedef struct ngx_http_variable_s  ngx_http_variable_t;
 
+/**
+ * ngx_http_set_variable_pt 和ngx_http_get_variable_pt 分别是变量的set和get的handler， 都接收3个参数：
+ * r: 表示请求
+ * v: 表示变量值
+ * data: 定义变量名的ngx_http_variable_t结构体中的data成员
+ *  1）不起作用， 生成一些和用户请求无关的变量值，例如当前时间、系统负载、磁盘状况等
+ *  2）为指针，指向变量名。 例如http_或者sent_http_，实际上每一个这样的变量其解析方法都大同小异，
+ *     遍历解析出来的r->headers_in.headers或者r->headers_in.headers数组，找到变量名再返回其值即可
+ *  3）为序列化内存的相对偏移量使用。指向已经解析出来的变量： offsetof(ngx_http_request_t, headers_in.user_agent)
+ * 
+ */
 typedef void (*ngx_http_set_variable_pt) (ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 typedef ngx_int_t (*ngx_http_get_variable_pt) (ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
 
 
-#define NGX_HTTP_VAR_CHANGEABLE   1
-#define NGX_HTTP_VAR_NOCACHEABLE  2
-#define NGX_HTTP_VAR_INDEXED      4
-#define NGX_HTTP_VAR_NOHASH       8
-#define NGX_HTTP_VAR_WEAK         16
-#define NGX_HTTP_VAR_PREFIX       32
+#define NGX_HTTP_VAR_CHANGEABLE   1     //变量值可以改变
+#define NGX_HTTP_VAR_NOCACHEABLE  2     //不要缓存这个变量的值
+#define NGX_HTTP_VAR_INDEXED      4     //将变量索引，加速访问
+#define NGX_HTTP_VAR_NOHASH       8     //不要把这个变量hash到散列表中。（如可选变量， 如果要使用，必须先索引）
+#define NGX_HTTP_VAR_WEAK         16    //“弱”变量
+#define NGX_HTTP_VAR_PREFIX       32    //是否有前缀，如"http_" "arg_"
 
 
+/**
+ * 保存变量名的结构体
+ * 负责指定一个变量名字符串，以及如何去解析出相应的变量值
+ * 
+ * 所有 的变量名定义ngx_http_variable_t都会保存在全局唯一的ngx_http_core_main_conf_t对象中
+ */
 struct ngx_http_variable_s {
+    // name就是字符串变量名，例如 nginx.conf中常见的 $remote_addr这样的字符串，不包括$符号
     ngx_str_t                     name;   /* must be first to build the hash */
+    // 如果需要变量最初赋值时就进行变量值的设置，那么可以实现 set_handler方法。如果我们定义的
+    // 内部变量允许在 nginx.conf中以 set方式又重新设置其值，那么可以实现该方法（参考 args参数， 
+    // 它就是一个内部变量，同时也允许 set方式在 nginx.conf里重新设置其值），
     ngx_http_set_variable_pt      set_handler;
+
+    // 每次获取一个变量的值时，会先调用 get_handler方法，所以 Nginx的官方模块变量的解析大都在此方法中完成
     ngx_http_get_variable_pt      get_handler;
+    // 这个整数是作为参数传递给get_handler、 set_handler回调方法使用
     uintptr_t                     data;
+
+    /**
+     * #define NGX_HTTP_VAR_CHANGEABLE   1      表示变量可变
+     * #define NGX_HTTP_VAR_NOCACHEABLE  2      不要缓存值，每次使用变量都重新解析。
+     * #define NGX_HTTP_VAR_INDEXED      4      将变量索引，加速访问
+     * #define NGX_HTTP_VAR_NOHASH       8      不加入hash, 如只通过索引访问的变量
+     */
     ngx_uint_t                    flags;
+    // 这个数字也就是变量值在请求中的缓存数组中的索引
     ngx_uint_t                    index;
 };
 

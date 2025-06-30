@@ -12,6 +12,12 @@
 #include <zlib.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_gzip_module.html
+ * 
+ * 使用gzip压缩响应
+ * 
+ */
 typedef struct {
     ngx_flag_t           enable;
     ngx_flag_t           no_buffer;
@@ -55,6 +61,8 @@ typedef struct {
     unsigned             redo:1;
     unsigned             done:1;
     unsigned             nomem:1;
+    //proxy_buffering 表示
+    //https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering
     unsigned             buffering:1;
     unsigned             zlib_ng:1;
     unsigned             state_allocated:1;
@@ -110,7 +118,7 @@ static ngx_conf_post_handler_pt  ngx_http_gzip_hash_p = ngx_http_gzip_hash;
 
 static ngx_command_t  ngx_http_gzip_filter_commands[] = {
 
-    { ngx_string("gzip"),
+    { ngx_string("gzip"),       //Enables or disables gzipping of responses.
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF
                         |NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -118,21 +126,21 @@ static ngx_command_t  ngx_http_gzip_filter_commands[] = {
       offsetof(ngx_http_gzip_conf_t, enable),
       NULL },
 
-    { ngx_string("gzip_buffers"),
+    { ngx_string("gzip_buffers"),   //Sets the number and size of buffers used to compress a response
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE2,
       ngx_conf_set_bufs_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_gzip_conf_t, bufs),
       NULL },
 
-    { ngx_string("gzip_types"),
+    { ngx_string("gzip_types"), //	gzip_types mime-type ...;
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_types_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_gzip_conf_t, types_keys),
       &ngx_http_html_default_types[0] },
 
-    { ngx_string("gzip_comp_level"),
+    { ngx_string("gzip_comp_level"), //compress level
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_num_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -167,7 +175,7 @@ static ngx_command_t  ngx_http_gzip_filter_commands[] = {
       offsetof(ngx_http_gzip_conf_t, no_buffer),
       NULL },
 
-    { ngx_string("gzip_min_length"),
+    { ngx_string("gzip_min_length"), //Sets the minimum length of a response that will be gzipped
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
       NGX_HTTP_LOC_CONF_OFFSET,
@@ -1001,6 +1009,9 @@ ngx_http_gzip_filter_free_copy_buf(ngx_http_request_t *r,
 }
 
 
+/**
+ * 注册变量 $gzip_ratio
+ */
 static ngx_int_t
 ngx_http_gzip_add_variables(ngx_conf_t *cf)
 {
@@ -1017,6 +1028,9 @@ ngx_http_gzip_add_variables(ngx_conf_t *cf)
 }
 
 
+/**
+ * $gzip_ratio的 get_handler
+ */
 static ngx_int_t
 ngx_http_gzip_ratio_variable(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data)
@@ -1124,6 +1138,9 @@ ngx_http_gzip_merge_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+/**
+ * 安装filter
+ */
 static ngx_int_t
 ngx_http_gzip_filter_init(ngx_conf_t *cf)
 {

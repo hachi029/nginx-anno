@@ -19,6 +19,7 @@ static ngx_int_t ngx_decode_base64_internal(ngx_str_t *dst, ngx_str_t *src,
     const u_char *basis);
 
 
+//将src指向的前n个字节小写后存入dst
 void
 ngx_strlow(u_char *dst, u_char *src, size_t n)
 {
@@ -31,6 +32,7 @@ ngx_strlow(u_char *dst, u_char *src, size_t n)
 }
 
 
+//计算字符串长度，最多检查n个字符
 size_t
 ngx_strnlen(u_char *p, size_t n)
 {
@@ -47,6 +49,7 @@ ngx_strnlen(u_char *p, size_t n)
 }
 
 
+//字符串复制，最多n字节
 u_char *
 ngx_cpystrn(u_char *dst, u_char *src, size_t n)
 {
@@ -71,6 +74,9 @@ ngx_cpystrn(u_char *dst, u_char *src, size_t n)
 }
 
 
+/**
+ *  复制ngx_str_t的数据，包含分配内存
+ */
 u_char *
 ngx_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
 {
@@ -119,6 +125,7 @@ ngx_pstrdup(ngx_pool_t *pool, ngx_str_t *src)
  */
 
 
+//字符串格式化
 u_char * ngx_cdecl
 ngx_sprintf(u_char *buf, const char *fmt, ...)
 {
@@ -133,6 +140,7 @@ ngx_sprintf(u_char *buf, const char *fmt, ...)
 }
 
 
+//字符串格式化，参数max指示了缓冲区大小
 u_char * ngx_cdecl
 ngx_snprintf(u_char *buf, size_t max, const char *fmt, ...)
 {
@@ -658,6 +666,9 @@ ngx_strcasecmp(u_char *s1, u_char *s2)
 }
 
 
+/**
+ * 已知长度的字符串比较，返回0 表示相等
+ */
 ngx_int_t
 ngx_strncasecmp(u_char *s1, u_char *s2, size_t n)
 {
@@ -727,6 +738,9 @@ ngx_strnstr(u_char *s1, char *s2, size_t len)
  * must be length of the second substring - 1.
  */
 
+ /**
+  * 在s1中搜索s2子串，返回s2在s1出现的首个字符位置
+  */
 u_char *
 ngx_strstrn(u_char *s1, char *s2, size_t n)
 {
@@ -750,6 +764,11 @@ ngx_strstrn(u_char *s1, char *s2, size_t n)
 }
 
 
+/**
+ * 判断s2是否在s1里面，不区分大小写，
+ * 
+ * 如果在，返回s2在s1的位置指针，其中n为strlen(s2)-1
+ */
 u_char *
 ngx_strcasestrn(u_char *s1, char *s2, size_t n)
 {
@@ -867,6 +886,9 @@ ngx_rstrncasecmp(u_char *s1, u_char *s2, size_t n)
 }
 
 
+/**
+ * 已知长度内存比较
+ */
 ngx_int_t
 ngx_memn2cmp(u_char *s1, u_char *s2, size_t n1, size_t n2)
 {
@@ -963,6 +985,9 @@ ngx_filename_cmp(u_char *s1, u_char *s2, size_t n)
 }
 
 
+/**
+ * 字符串转为整数
+ */
 ngx_int_t
 ngx_atoi(u_char *line, size_t n)
 {
@@ -1963,7 +1988,12 @@ ngx_escape_json(u_char *dst, u_char *src, size_t size)
     return (uintptr_t) dst;
 }
 
-
+/**
+ * 
+ * 作为ngx_rbtree_s的插入函数ngx_rbtree_insert_pt
+ * 节点的标识符是字符串， 红黑树的第一排序依据仍然是节点的key关键字，第二排序依据则是节点的字符串
+ * 相当于是一个二级索引
+ */
 void
 ngx_str_rbtree_insert_value(ngx_rbtree_node_t *temp,
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel)
@@ -1976,34 +2006,49 @@ ngx_str_rbtree_insert_value(ngx_rbtree_node_t *temp,
         n = (ngx_str_node_t *) node;
         t = (ngx_str_node_t *) temp;
 
+        // 首先比较 key关键字，红黑树中以 key作为第一索引关键字
         if (node->key != temp->key) {
 
+            // 左子树节点的关键节小于右子树
             p = (node->key < temp->key) ? &temp->left : &temp->right;
 
+            // 当key关键字相同时，以字符串长度为第二索引关键字
         } else if (n->str.len != t->str.len) {
-
+            // 左子树节点字符串的长度小于右子树
             p = (n->str.len < t->str.len) ? &temp->left : &temp->right;
 
         } else {
+            // key关键字相同且字符串长度相同时，再继续比较字符串内容
             p = (ngx_memcmp(n->str.data, t->str.data, n->str.len) < 0)
                  ? &temp->left : &temp->right;
         }
-
+        // 如果当前节点 p是哨兵节点，那么跳出循环准备插入节点
         if (*p == sentinel) {
             break;
         }
 
+        // p节点与要插入的节点具有相同的标识符时，必须覆盖内容
         temp = *p;
     }
 
     *p = node;
+    // 置插入节点的父节点
     node->parent = temp;
+    // 左右子节点都是哨兵节
     node->left = sentinel;
     node->right = sentinel;
+    /*将节点颜色置为红色。注意，红黑树的 ngx_rbtree_insert方法会在可能的旋转操作后重置该节点的颜色 */
     ngx_rbt_red(node);
 }
 
-
+/**
+ * 对于ngx_str_node_t节点，Nginx还提供了ngx_str_rbtree_lookup方法用于检索红黑树节点
+ * 
+ * name是要查询的字符串（解决不同字符串 对应相同key关键字的问题）
+ * hash参数是要查询节点的key关键字
+ * 
+ * 返回的是查询到的红黑树节点结构体
+ */
 ngx_str_node_t *
 ngx_str_rbtree_lookup(ngx_rbtree_t *rbtree, ngx_str_t *val, uint32_t hash)
 {

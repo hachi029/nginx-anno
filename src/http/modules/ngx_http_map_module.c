@@ -10,31 +10,46 @@
 #include <ngx_http.h>
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_map_module.html
+ * 基于其他变量值创建新的变量
+ * 
+ */
+
+ /**
+  * 对应于配置指令map所需查找构建的hash参数
+  */
 typedef struct {
     ngx_uint_t                  hash_max_size;
     ngx_uint_t                  hash_bucket_size;
 } ngx_http_map_conf_t;
 
 
+/**
+ * map指令配置解析上下文
+ */
 typedef struct {
-    ngx_hash_keys_arrays_t      keys;
+    ngx_hash_keys_arrays_t      keys;           //用于构建hash的结构体
 
-    ngx_array_t                *values_hash;
+    ngx_array_t                *values_hash;    //一个简易的散列表， 记录map 的value
 #if (NGX_PCRE)
-    ngx_array_t                 regexes;
+    ngx_array_t                 regexes;        //map中source是正则表达式的项目
 #endif
 
-    ngx_http_variable_value_t  *default_value;
+    ngx_http_variable_value_t  *default_value;      //default配置的值
     ngx_conf_t                 *cf;
-    unsigned                    hostnames:1;
-    unsigned                    no_cacheable:1;
+    unsigned                    hostnames:1;        //标识出现了hostnames配置
+    unsigned                    no_cacheable:1;     //生成的变量是no_cacheable
 } ngx_http_map_conf_ctx_t;
 
 
+/**
+ * 对应于一个map配置指令的结构体
+ */
 typedef struct {
-    ngx_http_map_t              map;
-    ngx_http_complex_value_t    value;
-    ngx_http_variable_value_t  *default_value;
+    ngx_http_map_t              map;            
+    ngx_http_complex_value_t    value;          //map配置中的source构建的复杂变量
+    ngx_http_variable_value_t  *default_value;  //默认值
     ngx_uint_t                  hostnames;      /* unsigned  hostnames:1 */
 } ngx_http_map_ctx_t;
 
@@ -77,6 +92,7 @@ static ngx_http_module_t  ngx_http_map_module_ctx = {
     NULL,                                  /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
+    //map指令只能在http层级配置，所以不需要有merge函数
     ngx_http_map_create_conf,              /* create main configuration */
     NULL,                                  /* init main configuration */
 
@@ -104,6 +120,11 @@ ngx_module_t  ngx_http_map_module = {
 };
 
 
+/**
+ * map指令生成的变量的get_handler
+ * 
+ * data为 ngx_http_map_ctx_t
+ */
 static ngx_int_t
 ngx_http_map_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     uintptr_t data)
@@ -117,6 +138,7 @@ ngx_http_map_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "http map started");
 
+    //实时计算source值 val
     if (ngx_http_complex_value(r, &map->value, &val) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -125,6 +147,7 @@ ngx_http_map_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
         val.len--;
     }
 
+    //val为map指令中的source
     value = ngx_http_map_find(r, &map->map, &val);
 
     if (value == NULL) {
@@ -155,6 +178,9 @@ ngx_http_map_variable(ngx_http_request_t *r, ngx_http_variable_value_t *v,
 }
 
 
+/**
+ * 创建配置结构体
+ */
 static void *
 ngx_http_map_create_conf(ngx_conf_t *cf)
 {
@@ -172,6 +198,19 @@ ngx_http_map_create_conf(ngx_conf_t *cf)
 }
 
 
+/**
+ * 解析配置指令 map。 一个map指令其实就是一个hash表，key为 source, value为映射出来的值
+ * 
+ * key 也支持通配符匹配
+ * 
+ *  map string $variable { ... }
+ * 
+ *  map $http_user_agent $mobile {
+        default       0;
+        "~Opera Mini" 1;
+    }
+ * 
+ */
 static char *
 ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
@@ -208,14 +247,17 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
 
+    //第一个参数value[1]可以包含变量，此处进行复杂变量编译
     ccv.cf = cf;
     ccv.value = &value[1];
     ccv.complex_value = &map->value;
 
+    //复杂变量编译
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 
+    //新变量的值
     name = value[2];
 
     if (name.data[0] != '$') {
@@ -227,11 +269,13 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     name.len--;
     name.data++;
 
+    //注册变量
     var = ngx_http_add_variable(cf, &name, NGX_HTTP_VAR_CHANGEABLE);
     if (var == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    //设置get_handler
     var->get_handler = ngx_http_map_variable;
     var->data = (uintptr_t) map;
 
@@ -243,11 +287,13 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     ctx.keys.pool = cf->pool;
     ctx.keys.temp_pool = pool;
 
+    //初始化用于构建hash的 ngx_hash_keys_arrays_t 结构体
     if (ngx_hash_keys_array_init(&ctx.keys, NGX_HASH_LARGE) != NGX_OK) {
         ngx_destroy_pool(pool);
         return NGX_CONF_ERROR;
     }
 
+    //创建values_hash， 存放value的一个二维数组，第一维为value的hash值
     ctx.values_hash = ngx_pcalloc(pool, sizeof(ngx_array_t) * ctx.keys.hsize);
     if (ctx.values_hash == NULL) {
         ngx_destroy_pool(pool);
@@ -270,7 +316,7 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     save = *cf;
     cf->pool = pool;
-    cf->ctx = &ctx;
+    cf->ctx = &ctx;     //配置解析上下文
     cf->handler = ngx_http_map;
     cf->handler_conf = conf;
 
@@ -292,16 +338,19 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     map->hostnames = ctx.hostnames;
 
+    //构建 ngx_hash_init_t
     hash.key = ngx_hash_key_lc;
     hash.max_size = mcf->hash_max_size;
     hash.bucket_size = mcf->hash_bucket_size;
     hash.name = "map_hash";
     hash.pool = cf->pool;
 
+    //初始化hash
     if (ctx.keys.keys.nelts) {
         hash.hash = &map->map.hash.hash;
         hash.temp_pool = NULL;
 
+        //初始化精确匹配hash
         if (ngx_hash_init(&hash, ctx.keys.keys.elts, ctx.keys.keys.nelts)
             != NGX_OK)
         {
@@ -310,6 +359,7 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         }
     }
 
+    //初始化前置通配符匹配hash
     if (ctx.keys.dns_wc_head.nelts) {
 
         ngx_qsort(ctx.keys.dns_wc_head.elts,
@@ -330,6 +380,7 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         map->map.hash.wc_head = (ngx_hash_wildcard_t *) hash.hash;
     }
 
+    //初始化后置通配符匹配hash
     if (ctx.keys.dns_wc_tail.nelts) {
 
         ngx_qsort(ctx.keys.dns_wc_tail.elts,
@@ -352,6 +403,7 @@ ngx_http_map_block(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 #if (NGX_PCRE)
 
+    //正则
     if (ctx.regexes.nelts) {
         map->map.regex = ctx.regexes.elts;
         map->map.nregex = ctx.regexes.nelts;
@@ -377,6 +429,14 @@ ngx_http_map_cmp_dns_wildcards(const void *one, const void *two)
 }
 
 
+/**
+ * https://nginx.org/en/docs/http/ngx_http_map_module.html#map
+ * 
+ * 负责map指令解析，作为 ngx_conf_parse 的解析 handler
+ * 
+ *  配置格式
+ *  example.com   1;
+ */
 static char *
 ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 {
@@ -394,6 +454,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 
     value = cf->args->elts;
 
+    //indicates that source values can be hostnames with a prefix or suffix mask
     if (cf->args->nelts == 1
         && ngx_strcmp(value[0].data, "hostnames") == 0)
     {
@@ -401,6 +462,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return NGX_CONF_OK;
     }
 
+    //indicates that the variable is not cacheable
     if (cf->args->nelts == 1
         && ngx_strcmp(value[0].data, "volatile") == 0)
     {
@@ -408,17 +470,19 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         return NGX_CONF_OK;
     }
 
+    //非法配置
     if (cf->args->nelts != 2) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "invalid number of the map parameters");
         return NGX_CONF_ERROR;
     }
 
+    //include指令
     if (ngx_strcmp(value[0].data, "include") == 0) {
         return ngx_conf_include(cf, dummy, conf);
     }
 
-    key = 0;
+    key = 0;        //value的hash值
 
     for (i = 0; i < value[1].len; i++) {
         key = ngx_hash(key, value[1].data[i]);
@@ -452,6 +516,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         }
 
     } else {
+        //对应槽位的动态数组为null, 这里进行初始化
         if (ngx_array_init(&ctx->values_hash[key], cf->pool, 4,
                            sizeof(ngx_http_variable_value_t *))
             != NGX_OK)
@@ -460,13 +525,15 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
         }
     }
 
+    //创建一个代表变量值的结构体
     var = ngx_palloc(ctx->keys.pool, sizeof(ngx_http_variable_value_t));
     if (var == NULL) {
         return NGX_CONF_ERROR;
     }
 
+    //ngx_str_t v;
     v.len = value[1].len;
-    v.data = ngx_pstrdup(ctx->keys.pool, &value[1]);
+    v.data = ngx_pstrdup(ctx->keys.pool, &value[1]);        //复制target
     if (v.data == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -477,6 +544,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     ccv.value = &v;
     ccv.complex_value = &cv;
 
+    //编译复杂变量
     if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
@@ -502,6 +570,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
     var->no_cacheable = 0;
     var->not_found = 0;
 
+    //加入到values_hash中. key为value的hash
     vp = ngx_array_push(&ctx->values_hash[key]);
     if (vp == NULL) {
         return NGX_CONF_ERROR;
@@ -511,6 +580,7 @@ ngx_http_map(ngx_conf_t *cf, ngx_command_t *dummy, void *conf)
 
 found:
 
+    //default
     if (ngx_strcmp(value[0].data, "default") == 0) {
 
         if (ctx->default_value) {
@@ -526,11 +596,13 @@ found:
 
 #if (NGX_PCRE)
 
+    //正则
     if (value[0].len && value[0].data[0] == '~') {
         ngx_regex_compile_t    rc;
         ngx_http_map_regex_t  *regex;
         u_char                 errstr[NGX_MAX_CONF_ERRSTR];
 
+        //在正则动态数组中添加一项
         regex = ngx_array_push(&ctx->regexes);
         if (regex == NULL) {
             return NGX_CONF_ERROR;
@@ -541,21 +613,24 @@ found:
 
         ngx_memzero(&rc, sizeof(ngx_regex_compile_t));
 
+        //忽略大小写
         if (value[0].data[0] == '*') {
             value[0].len--;
             value[0].data++;
             rc.options = NGX_REGEX_CASELESS;
         }
 
-        rc.pattern = value[0];
+        rc.pattern = value[0];      //正则表达式pattern
         rc.err.len = NGX_MAX_CONF_ERRSTR;
         rc.err.data = errstr;
 
+        //编译正则表达式
         regex->regex = ngx_http_regex_compile(ctx->cf, &rc);
         if (regex->regex == NULL) {
             return NGX_CONF_ERROR;
         }
 
+        //var为代表变量值的ngx_http_variable_value_t
         regex->value = var;
 
         return NGX_CONF_OK;
@@ -568,6 +643,7 @@ found:
         value[0].data++;
     }
 
+    //将key加入到ngx_hash_keys_arrays_t 中
     rv = ngx_hash_add_key(&ctx->keys, &value[0], var,
                           (ctx->hostnames) ? NGX_HASH_WILDCARD_KEY : 0);
 

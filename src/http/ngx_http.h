@@ -68,12 +68,15 @@ struct ngx_http_chunked_s {
 };
 
 
+/**
+ * 表示响应状态行
+ */
 typedef struct {
     ngx_uint_t           http_version;
     ngx_uint_t           code;
     ngx_uint_t           count;
-    u_char              *start;
-    u_char              *end;
+    u_char              *start;     //响应状态行起始位置
+    u_char              *end;       //响应状态行结束位置
 } ngx_http_status_t;
 
 
