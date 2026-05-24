@@ -36,6 +36,7 @@ struct ngx_listening_s {
 
     // 套接字类型。例如，当 type是SOCK_STREAM时，表示 TCP
     int                 type;
+    int                 protocol;
 
     //TCP实现监听时的 backlog队列，它表示允许正在通过三次握手建立 TCP连接但还没有任何进程开始处理的连接最大个数
     int                 backlog;
@@ -108,6 +109,8 @@ struct ngx_listening_s {
     unsigned            add_reuseport:1;
     unsigned            keepalive:2;
     unsigned            quic:1;
+
+    unsigned            change_protocol:1;
 
     unsigned            deferred_accept:1;
     unsigned            delete_deferred:1;

@@ -129,6 +129,9 @@ struct ngx_log_s {
     // 多个日志对象串成一个按level降序的链表
     // 即日志级别由低到高，提高记录日志的效率
     ngx_log_t           *next;
+
+    NGX_COMPAT_BEGIN(5)
+    NGX_COMPAT_END
 };
 
 
