@@ -713,7 +713,7 @@ ngx_http_get_variable_index(ngx_conf_t *cf, ngx_str_t *name)
 
 
 /**
- * returns a cached value
+ * returns a cached value  return &r->variables[index];
  * 基于变量索引值，获取变量值
  * 返回值就是变量值, 返回NULL 即没有解析出变量
  * 
@@ -754,7 +754,7 @@ ngx_http_get_indexed_variable(ngx_http_request_t *r, ngx_uint_t index)
 
     ngx_http_variable_depth--;
 
-    //获取变量值
+    //获取变量值.过程中可能涉及获取其他变量，ngx_http_variable_depth记录了解析过程中最多去获取其他变量的个数(默认100)
     if (v[index].get_handler(r, &r->variables[index], v[index].data)
         == NGX_OK)
     {
@@ -853,6 +853,7 @@ ngx_http_get_variable(ngx_http_request_t *r, ngx_str_t *name, ngx_uint_t key)
         //调用变量获取值的方法get_handler
         if (vv && v->get_handler(r, vv, v->data) == NGX_OK) {
             ngx_http_variable_depth++;
+            //获取成功，返回
             return vv;
         }
 

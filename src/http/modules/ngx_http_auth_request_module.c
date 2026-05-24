@@ -219,7 +219,7 @@ ngx_http_auth_request_handler(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    //子请求结束的回调
+    //子请求结束时在ngx_http_finalize_request()方法会回调此方法
     ps->handler = ngx_http_auth_request_done;
     ps->data = ctx;
 

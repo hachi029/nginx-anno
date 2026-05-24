@@ -2,15 +2,15 @@
     1.创建子请求结构体 sr = ngx_pcalloc(r->pool, sizeof(ngx_http_request_t));
     2.设置子请求执行时的回调sr->post_subrequest = ps; （子请求结束时ngx_http_finalize_request()方法会回调此方法）
     2.设置子请求的sr->write_event_handler = ngx_http_handler;
-    3.调用 ngx_http_post_request（）将子请求添加到主请求的r->posted_requests链表末尾
+    3.调用 ngx_http_post_request() 将子请求添加到主请求的 r->posted_requests链表末尾
  2. ngx_http_run_posted_requests()函数驱动子请求运行：
-    1.遍历r->main->posted_requests链表，依次调用其r->write_event_handler(r)方法
+    1.遍历r->main->posted_requests 链表，依次调用其r->write_event_handler(r)方法
     2.r->write_event_handler实际为 ngx_http_handler，会启动ngx_http_core_run_phases()
- 3. 子请求结束时ngx_http_finalize_request()
+ 3. 子请求结束时 ngx_http_finalize_request()
     1.如果当前请求为子请求，且其post_subrequest不为null, 则调用 r->post_subrequest->handler(r, r->post_subrequest->data, rc)
     2.在post_subrequest->handler中
         1.解析子请求的响应状态码和响应内容，将解析结果传递给主请求(如将解析结果设置到主请求的上下文中)
-        2.还必须设置主请求的 write_event_handler，来重新开始主请求的执行逻辑 r->write_event_hander=mytest_post_handler
+        2.还必须设置主请求的 write_event_handler ，来重新开始主请求的执行逻辑 r->write_event_hander=mytest_post_handler
     3.调用ngx_http_post_request(pr, NULL)， 将父请求加入主请求的 posted_request队尾，让父请求获得一次运行机会（调用父请求的write_event_hander）
       从而实现子请求结束时激活父请求，让父请求继续执行（在ngx_http_run_posted_requests()中）。
 

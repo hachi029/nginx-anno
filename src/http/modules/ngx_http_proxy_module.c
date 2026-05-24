@@ -1125,10 +1125,10 @@ ngx_http_proxy_handler(ngx_http_request_t *r)
     u->accel = 1;
 
     //默认request_buffering为on, 即request_body_no_buffering=0
-    if (!plcf->upstream.request_buffering
-        && plcf->body_values == NULL && plcf->upstream.pass_request_body
+    if (!plcf->upstream.request_buffering           //关闭了request_buffering 
+        && plcf->body_values == NULL && plcf->upstream.pass_request_body //需要向上游传递请求体，且请求体不需要被改写
         && (!r->headers_in.chunked
-            || plcf->http_version == NGX_HTTP_VERSION_11))
+            || plcf->http_version == NGX_HTTP_VERSION_11))              //不是chunked请求或http版本为1.1
     {
         r->request_body_no_buffering = 1;
     }

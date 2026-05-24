@@ -280,7 +280,8 @@ typedef struct {
     //会尽量地在内存或者磁盘中缓存来自上游的响应；如果 buffering为 0，仅会开辟一块固定大小的内存块作为缓存来转发响应
     ngx_flag_t                       buffering;
     //https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_request_buffering
-    //标识请求体是否会被缓存到本地文件
+    //标识请求体是否会被缓存到本地文件， Enables or disables buffering of a client request body.
+    //When buffering is enabled, the entire request body is read from the client before sending the request to a proxied server.
     ngx_flag_t                       request_buffering;
     //proxy_pass_request_headers 配置指令值. 是否向上游转发客户端请求头   on | off;
     ngx_flag_t                       pass_request_headers;
