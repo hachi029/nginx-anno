@@ -81,6 +81,7 @@
 #define NGX_HTTP_CONTINUE                  100
 #define NGX_HTTP_SWITCHING_PROTOCOLS       101
 #define NGX_HTTP_PROCESSING                102
+#define NGX_HTTP_EARLY_HINTS               103
 
 //https://developer.mozilla.org/zh-CN/docs/Web/HTTP/Reference/Status/412
 #define NGX_HTTP_OK                        200
@@ -102,6 +103,7 @@
 #define NGX_HTTP_FORBIDDEN                 403
 #define NGX_HTTP_NOT_FOUND                 404
 #define NGX_HTTP_NOT_ALLOWED               405
+#define NGX_HTTP_PROXY_AUTH_REQUIRED       407
 #define NGX_HTTP_REQUEST_TIME_OUT          408
 #define NGX_HTTP_CONFLICT                  409
 #define NGX_HTTP_LENGTH_REQUIRED           411
@@ -198,6 +200,7 @@ typedef struct {
 typedef struct {
     //所有解析过的 HTTP头部都在 headers链表中，每一个元素都是ngx_table_elt_t成员
     ngx_list_t                        headers;
+    ngx_uint_t                        count;
 
     /**
      * 以下每个 ngx_table_elt_t成员都是 RFC2616规范中定义的 HTTP头部， 它们实际都指向 headers链表中的相应成员
@@ -231,6 +234,7 @@ typedef struct {
 #endif
 
     ngx_table_elt_t                  *authorization;
+    ngx_table_elt_t                  *proxy_authorization;
 
     ngx_table_elt_t                  *keep_alive;
 
@@ -310,6 +314,7 @@ typedef struct {
     ngx_table_elt_t                  *content_range;
     ngx_table_elt_t                  *accept_ranges;
     ngx_table_elt_t                  *www_authenticate;
+    ngx_table_elt_t                  *proxy_authenticate;
     ngx_table_elt_t                  *expires;
     ngx_table_elt_t                  *etag;
 
@@ -808,6 +813,7 @@ struct ngx_http_request_s {
     //清理函数链表，包括一个handler和一个data指针. 当ngx_http_request_t 结构体被释放时调用
     ngx_http_cleanup_t               *cleanup;
 
+    in_port_t                         port;
     /**
      * Request reference counter. The field only makes sense for the main request
      *  Increasing the counter is done by simple r->main->count++. To decrease the counter, call ngx_http_finalize_request(r, rc)
@@ -1122,6 +1128,8 @@ typedef struct {
 
 
 #define ngx_http_ephemeral(r)  (void *) (&r->uri_start)
+
+#define ngx_http_proxy_auth(r)  ((r)->method == NGX_HTTP_CONNECT)
 
 
 extern ngx_http_header_t       ngx_http_headers_in[];

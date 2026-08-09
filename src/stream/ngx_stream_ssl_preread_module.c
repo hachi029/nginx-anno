@@ -73,16 +73,6 @@ static ngx_stream_module_t  ngx_stream_ssl_preread_module_ctx = {
 };
 
 
-/**
- * https://nginx.org/en/docs/http/ngx_http_ssl_module.html
- * 
- * ssl协议工作在tcp协议与http协议之间。nginx在支持ssl协议时，需要注意三点，其他时候只要正常处理http协议即可:
- * 
- * 1.tcp连接建立时，在tcp连接上建立ssl连接
- * 2.tcp数据接收后，将收到的数据解密并将解密后的数据交由正常http协议处理流程
- * 3.tcp数据发送前，对(http)数据进行加密，然后再发送
- * 
- */
 ngx_module_t  ngx_stream_ssl_preread_module = {
     NGX_MODULE_V1,
     &ngx_stream_ssl_preread_module_ctx,     /* module context */
@@ -114,9 +104,6 @@ static ngx_stream_variable_t  ngx_stream_ssl_preread_vars[] = {
 };
 
 
-/**
- * NGX_STREAM_PREREAD_PHASE 的handler
- */
 static ngx_int_t
 ngx_stream_ssl_preread_handler(ngx_stream_session_t *s)
 {
@@ -709,10 +696,6 @@ ngx_stream_ssl_preread_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
-/**
- * postconfiguration 
- * 安装一个NGX_STREAM_PREREAD_PHASE 的handler
- */
 static ngx_int_t
 ngx_stream_ssl_preread_init(ngx_conf_t *cf)
 {

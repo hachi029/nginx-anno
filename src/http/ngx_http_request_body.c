@@ -767,7 +767,9 @@ ngx_http_write_request_body(ngx_http_request_t *r)
 
         rb->temp_file = tf;     //将临时文件结构体赋值给请求体结构体request_body
 
-        if (rb->bufs == NULL) {     //如果请求体为空
+        if (rb->bufs == NULL
+            || (!ngx_buf_in_memory(rb->bufs->buf) && rb->bufs->buf->last_buf))
+        {
             /* empty body with r->request_body_in_file_only */
 
             //只是创建临时文件，不写入数据

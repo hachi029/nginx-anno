@@ -32,7 +32,7 @@ static ngx_int_t ngx_google_perftools_worker(ngx_cycle_t *cycle);
 
 
 typedef struct {
-    ngx_str_t  profiles;        // profile文件输出位置 /path/to/profile
+    ngx_str_t  profiles;
 } ngx_google_perftools_conf_t;
 
 

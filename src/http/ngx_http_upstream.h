@@ -43,6 +43,7 @@
                                              |NGX_HTTP_UPSTREAM_FT_HTTP_429)
 
 #define NGX_HTTP_UPSTREAM_INVALID_HEADER     40
+#define NGX_HTTP_UPSTREAM_EARLY_HINTS        41
 
 
 //*针对 ngx_http_upstream_t结构体中保存解析完的包头的 headers_in成员， 
@@ -60,6 +61,8 @@
 #define NGX_HTTP_UPSTREAM_IGN_XA_CHARSET     0x00000100
 #define NGX_HTTP_UPSTREAM_IGN_VARY           0x00000200
 
+
+#define NGX_HTTP_UPSTREAM_NOTIFY_HEADER      0x1
 
 /**
  * r->upstream_states 动态数组,
@@ -146,8 +149,9 @@ typedef struct {
     ngx_str_t                        service;
 #endif
 
-    NGX_COMPAT_BEGIN(2)
-    NGX_COMPAT_END
+#if (NGX_HTTP_UPSTREAM_SID || NGX_COMPAT)
+    ngx_str_t                        sid;
+#endif
 } ngx_http_upstream_server_t;
 
 
@@ -288,6 +292,7 @@ typedef struct {
     ngx_flag_t                       pass_request_body;
     //proxy_pass_trailers 配置指令值
     ngx_flag_t                       pass_trailers;
+    ngx_flag_t                       pass_early_hints;
 
     //表示标志位。当它为 1时，表示与上游服务器交互时将不检查 Nginx与下游客户端间的连接是否断开。
     //也就是说，即使下游客户端主动关闭了连接，也不会中断与上游服务器间的交互
@@ -379,6 +384,7 @@ typedef struct {
     //因此， change_buffering为 1时将有可能根据上游服务器返回的响应头部，动态地决定是以上游网速优先还是以下游网速优先
     unsigned                         change_buffering:1;
     unsigned                         preserve_output:1;
+    unsigned                         ignore_input:1;
 
 #if (NGX_HTTP_SSL || NGX_COMPAT)
     ngx_ssl_t                       *ssl;
@@ -401,7 +407,7 @@ typedef struct {
     //使用 upstream的模块名称，仅用于记录日志.    如"proxy"
     ngx_str_t                        module;
 
-    NGX_COMPAT_BEGIN(2)
+    NGX_COMPAT_BEGIN(5)
     NGX_COMPAT_END
 } ngx_http_upstream_conf_t;
 
@@ -588,6 +594,7 @@ struct ngx_http_upstream_s {
     ngx_buf_t                        buffer;
     //表示来自上游服务器的响应包体的长度
     off_t                            length;
+    off_t                            early_hints_length;
 
     //out_bufs在两种场景下有不同的意义：①当不需要转发包体，且使用默认的 input_filter方法
     //（也就是 ngx_http_upstream_non_buffered_filter方法）处理包体时， out_bufs将会指向响应包体，
@@ -631,6 +638,8 @@ struct ngx_http_upstream_s {
      * 当buffering为0时，将使用固定大小的缓冲区（就是上面介绍的buffer缓冲区）来转发响应包体
      */
     ngx_int_t                      (*input_filter)(void *data, ssize_t bytes);  //默认为 ngx_http_upstream_non_buffered_filter
+    ngx_int_t                      (*input_filter)(void *data, ssize_t bytes);
+
     //用于传递HTTP模块自定义的数据结构，在input_filter_init和 input_filter方法被回调时会作为参数传递过去
     void                            *input_filter_ctx;
 
@@ -684,6 +693,7 @@ struct ngx_http_upstream_s {
 #if (NGX_HTTP_SSL || NGX_COMPAT)
     //proxy_ssl_name 配置指令值    
     ngx_str_t                        ssl_name;
+    ngx_str_t                        ssl_alpn_protocol;
 #endif
 
     //目前它仅用于表示是否需要清理资源，相当于一个标志位，实际不会调用到它所指向的方法
@@ -737,6 +747,7 @@ struct ngx_http_upstream_s {
     //header_sent标志位表示包头是否发送， header_sent为 1时表示已经把包头转发给客户端了。
     //如果不转发响应到客户端，则 header_sent没有意义
     unsigned                         header_sent:1;
+    unsigned                         response_received:1;
 };
 
 
